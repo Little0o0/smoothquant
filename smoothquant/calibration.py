@@ -1,13 +1,87 @@
 import torch
 import torch.nn as nn
-
 from datasets import load_dataset
 import functools
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 from functools import partial
 import numpy as np
 from tqdm import tqdm
+
+
+def get_upper_bound(t):
+    # t = t.abs()
+    # q = torch.tensor([0.25, 0.75]).to(t.device)
+    # q1, q3 = torch.quantile(t.float(), q)
+    # upper_bound = q3 + 1.5 * (q3 - q1)
+    # lower_bound = q1 - 1.5 * (q3 - q1)
+    # return torch.max(upper_bound.abs(), lower_bound.abs())
+
+    # max_v = torch.tensor(16.).to(t.device)
+    # if max_v >= t.abs().max():
+    #     return t.abs().max()
+    # q = torch.tensor([0.99]).to(t.device)
+    # q99 = torch.quantile(t.float(), q)
+    # upper_bound = torch.max(max_v, q99)
+    # return torch.max(max_v, upper_bound).to(torch.float16)
+    return t.abs().max()
+
+    # upper_bound = torch.min(t.abs().max(), torch.tensor(16)).to(t.device).to(torch.float16)
+    # return upper_bound
+
+def get_act_outlier_idx(model, tokenizer, dataset_path, num_samples=512, seq_len=512, ratio = 0.5):
+    model.eval()
+    device = next(model.parameters()).device
+    act_outlier_idx = {}
+    mean_upper_bound = {}
+    def stat_tensor(name, tensor):
+        hidden_dim = tensor.shape[-1]
+        tensor = tensor.view(-1, hidden_dim).abs().detach()
+        q = torch.tensor([0.25, 0.75])
+        q1, q3 = torch.quantile(tensor.cpu().float(), q)
+        upper_bound = q3 + 1.5 * (q3 - q1)
+        # upper_bound = get_upper_bound(tensor)
+        idx = (torch.mean((tensor > upper_bound).float(), dim=0) >= ratio).nonzero().T[0].tolist()
+
+        if name in act_outlier_idx:
+            act_outlier_idx[name] = act_outlier_idx[name] + Counter(idx)
+            mean_upper_bound[name] += upper_bound
+        else:
+            act_outlier_idx[name] = Counter(idx)
+            mean_upper_bound[name] = upper_bound
+
+    def stat_input_hook(m, x, y, name):
+        if isinstance(x, tuple):
+            x = x[0]
+        stat_tensor(name, x)
+
+    hooks = []
+    for name, m in model.named_modules():
+        if isinstance(m, nn.Linear):
+            hooks.append(
+                m.register_forward_hook(
+                    functools.partial(stat_input_hook, name=name))
+            )
+
+    dataset = load_dataset(dataset_path, split="validation")
+    dataset = dataset.shuffle(seed=42)
+
+    for i in tqdm(range(num_samples)):
+        input_ids = tokenizer(dataset[i]["text"], return_tensors="pt",
+                              max_length=seq_len, truncation=True).input_ids.to(device)
+        model(input_ids)
+
+    for h in hooks:
+        h.remove()
+
+    for name in act_outlier_idx:
+        act_outlier_idx[name] = Counter({k: c for k, c in act_outlier_idx[name].items() if c >= num_samples * 0.5})
+
+    for name in mean_upper_bound:
+        mean_upper_bound[name] /= num_samples
+        mean_upper_bound[name] = mean_upper_bound[name].cpu()
+
+    return act_outlier_idx, mean_upper_bound
 
 
 def get_act_scales(model, tokenizer, dataset_path, num_samples=512, seq_len=512):
@@ -37,7 +111,7 @@ def get_act_scales(model, tokenizer, dataset_path, num_samples=512, seq_len=512)
                     functools.partial(stat_input_hook, name=name))
             )
 
-    dataset = load_dataset("json", data_files=dataset_path, split="train")
+    dataset = load_dataset(dataset_path, split="validation")
     dataset = dataset.shuffle(seed=42)
 
     for i in tqdm(range(num_samples)):
@@ -87,7 +161,7 @@ def get_static_decoder_layer_scales(model,
 
     print("Collecting activation scales...")
     pbar = tqdm(range(num_samples))
-    dataset = load_dataset('json', data_files=dataset_path, split="train")
+    dataset = load_dataset(dataset_path,  split="validation")
     dataset = dataset.shuffle(seed=42)
     for i in pbar:
         input_ids = tokenizer(dataset[i]["text"], return_tensors="pt",

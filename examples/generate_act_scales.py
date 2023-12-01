@@ -1,5 +1,15 @@
-import torch
+import sys
 import os
+
+# Get the current script's directory
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# Get the parent directory by going one level up
+parent_dir = os.path.dirname(current_dir)
+# Add the parent directory to sys.path
+sys.path.append(parent_dir)
+
+
+import torch
 
 from transformers import (
     AutoModelForCausalLM,
@@ -21,8 +31,8 @@ def parse_args():
                         default='facebook/opt-1.3b', help='model name')
     parser.add_argument('--output-path', type=str, default='act_scales/opt-1.3b.pt',
                         help='where to save the act scales')
-    parser.add_argument('--dataset-path', type=str, default='dataset/val.jsonl.zst',
-                        help='location of the calibration dataset, we use the validation set of the Pile dataset')
+    parser.add_argument('--dataset-path', type=str, default='OpenAssistant/oasst1',
+                        help='location of the calibration dataset, we use the validation set of the oasst1 validation dataset')
     parser.add_argument('--num-samples', type=int, default=512)
     parser.add_argument('--seq-len', type=int, default=512)
     args = parser.parse_args()
@@ -34,11 +44,11 @@ def main():
     args = parse_args()
     model, tokenizer = build_model_and_tokenizer(args.model_name)
 
-    if not os.path.exists(args.dataset_path):
-        print(f'Cannot find the dataset at {args.dataset_path}')
-        print('Please download the Pile dataset and put the validation set at the path')
-        print('You can download the validation dataset of the Pile at https://mystic.the-eye.eu/public/AI/pile/val.jsonl.zst')
-        raise FileNotFoundError
+    # if not os.path.exists(args.dataset_path):
+    #     print(f'Cannot find the dataset at {args.dataset_path}')
+    #     print('Please download the Pile dataset and put the validation set at the path')
+    #     print('You can download the validation dataset of the Pile at https://mystic.the-eye.eu/public/AI/pile/val.jsonl.zst')
+    #     raise FileNotFoundError
 
     act_scales = get_act_scales(model, tokenizer, args.dataset_path,
                                 args.num_samples, args.seq_len)
