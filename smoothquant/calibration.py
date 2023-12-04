@@ -9,46 +9,39 @@ import numpy as np
 from tqdm import tqdm
 
 
-def get_upper_bound(t):
-    # t = t.abs()
-    # q = torch.tensor([0.25, 0.75]).to(t.device)
-    # q1, q3 = torch.quantile(t.float(), q)
-    # upper_bound = q3 + 1.5 * (q3 - q1)
-    # lower_bound = q1 - 1.5 * (q3 - q1)
-    # return torch.max(upper_bound.abs(), lower_bound.abs())
+def get_upper_bound(t, strategy="IQR"):
+    bound = t.abs().max()
+    if strategy == "IQR":
+        t = t.detach()
+        q = torch.tensor([0.25, 0.75])
+        q1, q3 = torch.quantile(t.cpu().float(), q)
+        upper_bound = q3 + 1.5 * (q3 - q1)
+        lower_bound = q1 - 1.5 * (q3 - q1)
+        bound = torch.max(lower_bound.abs(), upper_bound.abs())
+    elif strategy == "absIQR":
+        t = t.detach()
+        q = torch.tensor([0.25, 0.75])
+        q1, q3 = torch.quantile(t.abs().cpu().float(), q)
+        bound = q3 + 1.5 * (q3 - q1)
+    else:
+        bound = torch.tensor(float(strategy)).float()
+    return bound
 
-    # max_v = torch.tensor(16.).to(t.device)
-    # if max_v >= t.abs().max():
-    #     return t.abs().max()
-    # q = torch.tensor([0.99]).to(t.device)
-    # q99 = torch.quantile(t.float(), q)
-    # upper_bound = torch.max(max_v, q99)
-    # return torch.max(max_v, upper_bound).to(torch.float16)
-    return t.abs().max()
-
-    # upper_bound = torch.min(t.abs().max(), torch.tensor(16)).to(t.device).to(torch.float16)
-    # return upper_bound
-
-def get_act_outlier_idx(model, tokenizer, dataset_path, num_samples=512, seq_len=512, ratio = 0.5):
+def get_act_outlier_idx(model, tokenizer, dataset_path, num_samples=512, seq_len=512, ratio = 0.5, strategy="IQR"):
     model.eval()
     device = next(model.parameters()).device
     act_outlier_idx = {}
     mean_upper_bound = {}
     def stat_tensor(name, tensor):
-        hidden_dim = tensor.shape[-1]
-        tensor = tensor.view(-1, hidden_dim).abs().detach()
-        q = torch.tensor([0.25, 0.75])
-        q1, q3 = torch.quantile(tensor.cpu().float(), q)
-        upper_bound = q3 + 1.5 * (q3 - q1)
-        # upper_bound = get_upper_bound(tensor)
-        idx = (torch.mean((tensor > upper_bound).float(), dim=0) >= ratio).nonzero().T[0].tolist()
+        bound = get_upper_bound(tensor, strategy="IQR")
+        idx = (torch.mean((tensor.abs() > bound).float(), dim=0) >= ratio).nonzero().T[0].tolist()
 
         if name in act_outlier_idx:
             act_outlier_idx[name] = act_outlier_idx[name] + Counter(idx)
-            mean_upper_bound[name] += upper_bound
+            mean_upper_bound[name] += bound
         else:
             act_outlier_idx[name] = Counter(idx)
-            mean_upper_bound[name] = upper_bound
+            mean_upper_bound[name] = bound
 
     def stat_input_hook(m, x, y, name):
         if isinstance(x, tuple):

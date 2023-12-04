@@ -113,9 +113,9 @@ class Evaluator:
 
 
 if __name__ == "__main__":
-    model_name = 'facebook/opt-1.3b'
+    model_name = 'facebook/opt-125m'
     # model_name = 'facebook/opt-6.7b'
-    filename = 'opt-1.3b.pt'
+    filename = 'opt-125m.pt'
     tokenizer = GPT2Tokenizer.from_pretrained(model_name)
     dataset = load_dataset('lambada', split='validation[:1000]')
     evaluator = Evaluator(dataset, tokenizer, 'cuda')
@@ -157,8 +157,7 @@ if __name__ == "__main__":
 
     model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
     outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
-    upper_bound = torch.load('upper_bound/'+filename)
-    model_quant = outlier_fix_model(model_fp16, outlier_dict=outlier_indices, upper_bound=upper_bound)
+    # upper_bound = torch.load('upper_bound/'+filename)
+    model_quant = outlier_fix_model(model_fp16, outlier_dict=outlier_indices, upper_bound={})
     acc =  evaluator.evaluate(model_quant)
     print(f'outlier quantized model , accuracy: {acc}')
-

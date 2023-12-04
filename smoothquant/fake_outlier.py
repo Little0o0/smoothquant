@@ -27,8 +27,8 @@ def quantize_weight_per_tensor_absmax(w, n_bits=8):
 def clipping_activation(t, upper_bound=None, outlier_idx=None,):
     if upper_bound is None:
         upper_bound = get_upper_bound(t, outlier_idx=outlier_idx)
-    max_range = torch.min(t.abs().max(), upper_bound.to(t.device))
-    t = t.clamp(min=-max_range, max=max_range)
+    # max_range = torch.min(t.abs().max(), upper_bound.to(t.device))
+    t = t.clamp(min=-upper_bound, max=upper_bound)
     return t
 
 def get_upper_bound(t, outlier_idx=None):
@@ -36,10 +36,9 @@ def get_upper_bound(t, outlier_idx=None):
     if outlier_idx is None:
         return t.abs().max()
 
-    in_features = t.shape(-1)
+    in_features = t.shape[-1]
     select_channels = [i for i in range(in_features) if i not in outlier_idx]
-    # upper_bound = t[..., select_channels].abs().max()
-    upper_bound = t.abs().max()
+    upper_bound = t[..., select_channels].abs().max()
     return upper_bound
     # t = t.abs()
     # q = torch.tensor([0.25, 0.75]).to(t.device)
@@ -68,7 +67,7 @@ def clipping_quantize_activation_per_token_absmax(t, upper_bound=None, n_bits=8,
     q_max = 2 ** (n_bits - 1) - 1
     max_range = t.abs().max(dim=-1, keepdim=True)[0]
     scales = max_range.clamp(min=1e-5).div(q_max)
-    t.div_(scales).round_().mul_(scales)
+    t = t.div(scales).round().mul(scales)
     return t
 
 @torch.no_grad()
@@ -79,7 +78,7 @@ def clipping_quantize_activation_per_tensor_absmax(t, outlier_idx=None, upper_bo
     q_max = 2 ** (n_bits - 1) - 1
     max_range = t.abs().max()
     scales = max_range.clamp(min=1e-5).div(q_max)
-    t.div_(scales).round_().mul_(scales)
+    t = t.div(scales).round().mul(scales)
     return t.to(torch.float16)
 
 class IQRClippingLinear(nn.Module):
@@ -160,14 +159,12 @@ class IQRClippingLinear(nn.Module):
 class OutlierLinear(nn.Module):
     def __init__(self, in_features, out_features, outlier_idx:list, upper_bound=None, bias=True, act_quant='per_tensor', quantize_output=False):
         # act_quant: per_tensor only !!!
-
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.outlier_idx = outlier_idx
-        self.outlier_features = len(outlier_idx)
+        self.outlier_features = len(self.outlier_idx)
         self.upper_bound = upper_bound
-
         self.register_buffer('weight', torch.randn(self.out_features,
                                                    self.in_features, dtype=torch.float16, requires_grad=False))
 
@@ -186,14 +183,14 @@ class OutlierLinear(nn.Module):
         if act_quant == 'per_token':
             self.act_quant_name = 'per_token'
             self.act_quant = partial(
-                clipping_quantize_activation_per_token_absmax, outlier_idx=outlier_idx, upper_bound=upper_bound, n_bits=8)
+                clipping_quantize_activation_per_token_absmax, outlier_idx=self.outlier_idx, upper_bound=upper_bound, n_bits=8)
         elif act_quant == 'per_tensor':
             self.act_quant_name = 'per_tensor'
             self.act_quant = partial(
-                clipping_quantize_activation_per_tensor_absmax, outlier_idx=outlier_idx,upper_bound=upper_bound, n_bits=8)
+                clipping_quantize_activation_per_tensor_absmax, outlier_idx=self.outlier_idx,upper_bound=upper_bound, n_bits=8)
         elif act_quant == 'clipping_only':
             self.act_quant_name = 'clipping_only'
-            self.act_quant =  partial(clipping_activation, outlier_idx=outlier_idx,upper_bound=upper_bound)
+            self.act_quant =  partial(clipping_activation, outlier_idx=self.outlier_idx,upper_bound=upper_bound)
         elif act_quant == 'None':
             self.act_quant_name = 'None'
             self.act_quant = lambda x: x
@@ -239,6 +236,9 @@ class OutlierLinear(nn.Module):
         new_module = OutlierLinear(
             module.in_features, module.out_features, outlier_idx=outlier_idx, upper_bound=upper_bound, bias = module.bias is not None, act_quant=act_quant,
             quantize_output=quantize_output)
+
+        outlier_idx = new_module.outlier_idx
+
         if weight_quant == 'per_channel':
             new_module.weight = quantize_weight_per_channel_absmax(
                 module.weight, n_bits=8)  # use 8-bit integer for weight
