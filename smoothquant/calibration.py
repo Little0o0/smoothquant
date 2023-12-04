@@ -1,3 +1,5 @@
+import logging
+
 import torch
 import torch.nn as nn
 from datasets import load_dataset
@@ -33,7 +35,9 @@ def get_act_outlier_idx(model, tokenizer, dataset_path, num_samples=512, seq_len
     act_outlier_idx = {}
     mean_upper_bound = {}
     def stat_tensor(name, tensor):
-        bound = get_upper_bound(tensor, strategy="IQR")
+        in_features = tensor.shape[-1]
+        tensor = tensor.view(-1, in_features)
+        bound = get_upper_bound(tensor, strategy=strategy)
         idx = (torch.mean((tensor.abs() > bound).float(), dim=0) >= ratio).nonzero().T[0].tolist()
 
         if name in act_outlier_idx:

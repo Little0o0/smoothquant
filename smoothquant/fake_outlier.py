@@ -63,7 +63,7 @@ def get_upper_bound(t, outlier_idx=None):
 def clipping_quantize_activation_per_token_absmax(t, upper_bound=None, n_bits=8, outlier_idx=None):
     t = clipping_activation(t, upper_bound=upper_bound, outlier_idx=outlier_idx)
     t_shape = t.shape
-    t.view(-1, t_shape[-1])
+    t = t.view(-1, t_shape[-1])
     q_max = 2 ** (n_bits - 1) - 1
     max_range = t.abs().max(dim=-1, keepdim=True)[0]
     scales = max_range.clamp(min=1e-5).div(q_max)
@@ -74,9 +74,10 @@ def clipping_quantize_activation_per_token_absmax(t, upper_bound=None, n_bits=8,
 def clipping_quantize_activation_per_tensor_absmax(t, outlier_idx=None, upper_bound=None, n_bits=8):
     t = clipping_activation(t, upper_bound=upper_bound, outlier_idx=outlier_idx)
     t_shape = t.shape
-    t.view(-1, t_shape[-1])
+    t = t.view(-1, t_shape[-1])
     q_max = 2 ** (n_bits - 1) - 1
     max_range = t.abs().max()
+    # scales = max_range.clamp(min=1e-5).div(q_max)
     scales = max_range.clamp(min=1e-5).div(q_max)
     t = t.div(scales).round().mul(scales)
     return t.to(torch.float16)
@@ -190,7 +191,7 @@ class OutlierLinear(nn.Module):
                 clipping_quantize_activation_per_tensor_absmax, outlier_idx=self.outlier_idx,upper_bound=upper_bound, n_bits=8)
         elif act_quant == 'clipping_only':
             self.act_quant_name = 'clipping_only'
-            self.act_quant =  partial(clipping_activation, outlier_idx=self.outlier_idx,upper_bound=upper_bound)
+            self.act_quant = partial(clipping_activation, outlier_idx=self.outlier_idx,upper_bound=upper_bound)
         elif act_quant == 'None':
             self.act_quant_name = 'None'
             self.act_quant = lambda x: x
@@ -199,7 +200,8 @@ class OutlierLinear(nn.Module):
 
         if quantize_output:
             self.output_quant_name = self.act_quant_name
-            self.output_quant = self.act_quant
+            self.output_quant = partial(
+                clipping_quantize_activation_per_tensor_absmax, outlier_idx=None, n_bits=8)
         else:
             self.output_quant_name = 'None'
             self.output_quant = lambda x: x
@@ -216,11 +218,12 @@ class OutlierLinear(nn.Module):
     @torch.no_grad()
     def forward(self, x):
         q_x = self.act_quant(x)
-        up = self.upper_bound if self.upper_bound is not None else get_upper_bound(x)
+        up = get_upper_bound(x, self.outlier_idx)
         up = up.to(q_x.device)
         if self.outlier_features != 0:
             out_x = x[..., self.outlier_idx]
-            out_x -= out_x.clamp(min=-up, max=up)
+            v_abs  =  torch.maximum(torch.abs(out_x)-up, torch.tensor(0.))
+            out_x  = out_x/torch.abs(out_x) * v_abs
             res_y = torch.functional.F.linear(out_x, self.out_weight)
         else:
             res_y = 0
@@ -233,6 +236,7 @@ class OutlierLinear(nn.Module):
         assert isinstance(module, torch.nn.Linear)
         max_outlier_features = module.in_features // 100
         outlier_idx = [x[0] for x in outlier_dict.most_common(max_outlier_features)]
+        # outlier_idx = list(outlier_dict.keys())
         new_module = OutlierLinear(
             module.in_features, module.out_features, outlier_idx=outlier_idx, upper_bound=upper_bound, bias = module.bias is not None, act_quant=act_quant,
             quantize_output=quantize_output)

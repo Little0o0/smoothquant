@@ -35,9 +35,9 @@ def build_model_and_tokenizer(model_name):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model-name', type=str,
-                        default='facebook/opt-125m', help='model name')
+                        default='facebook/opt-6.7b', help='model name')
     parser.add_argument('--file-name', type=str,
-                        default='opt-125m.pt', help='model name')
+                        default='opt-6.7b.pt', help='model name')
     # parser.add_argument('--output-path', type=str, default='outlier_idx/opt-1.3b.pt',
     #                     help='where to save the act scales')
     parser.add_argument('--dataset-path', type=str, default='OpenAssistant/oasst1',
@@ -60,8 +60,7 @@ def main():
     #     print('Please download the Pile dataset and put the validation set at the path')
     #     print('You can download the validation dataset of the Pile at https://mystic.the-eye.eu/public/AI/pile/val.jsonl.zst')
     #     raise FileNotFoundError
-    outlier_idx, mean_upper_bound = get_act_outlier_idx(model, tokenizer, args.dataset_path,
-                                args.num_samples, args.seq_len, args.strategy)
+    outlier_idx, mean_upper_bound = get_act_outlier_idx(model, tokenizer, args.dataset_path, args.num_samples, args.seq_len, strategy=args.strategy)
 
     os.makedirs(os.path.dirname("outlier_idx/"), exist_ok=True)
     os.makedirs(os.path.dirname("upper_bound/"), exist_ok=True)

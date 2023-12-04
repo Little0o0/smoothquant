@@ -28,9 +28,11 @@ def build_model_and_tokenizer(model_name):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model-name', type=str,
-                        default='facebook/opt-1.3b', help='model name')
-    parser.add_argument('--output-path', type=str, default='act_scales/opt-1.3b.pt',
-                        help='where to save the act scales')
+                        default='facebook/opt-6.7b', help='model name')
+    parser.add_argument('--file-name', type=str,
+                        default='opt-6.7b.pt', help='model name')
+    # parser.add_argument('--output-path', type=str, default='act_scales/opt-1.3b.pt',
+    #                     help='where to save the act scales')
     parser.add_argument('--dataset-path', type=str, default='OpenAssistant/oasst1',
                         help='location of the calibration dataset, we use the validation set of the oasst1 validation dataset')
     parser.add_argument('--num-samples', type=int, default=512)
@@ -53,8 +55,8 @@ def main():
     act_scales = get_act_scales(model, tokenizer, args.dataset_path,
                                 args.num_samples, args.seq_len)
 
-    os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-    torch.save(act_scales, args.output_path)
+    os.makedirs(os.path.dirname("act_scales/"), exist_ok=True)
+    torch.save(act_scales, "act_scales/" + args.file_name)
 
 
 if __name__ == '__main__':

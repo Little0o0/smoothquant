@@ -19,6 +19,26 @@ from smoothquant.fake_outlier import IQRClippingLinear
 from smoothquant.outlier import outlier_fix_model
 from datasets import load_dataset
 from tqdm import tqdm
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model-name', type=str,
+                        default='facebook/opt-6.7b', help='model name')
+    parser.add_argument('--file-name', type=str,
+                        default='opt-6.7b.pt', help='model name')
+    # parser.add_argument('--output-path', type=str, default='outlier_idx/opt-1.3b.pt',
+    #                     help='where to save the act scales')
+    parser.add_argument('--dataset-path', type=str, default='OpenAssistant/oasst1',
+                        help='location of the calibration dataset, we use the validation set of the oasst1 validation dataset')
+    parser.add_argument('--num-samples', type=int, default=512)
+    parser.add_argument('--seq-len', type=int, default=512)
+    parser.add_argument('--strategy', type=str,
+                        default='IQR', help='outlier detection strategy')
+    args = parser.parse_args()
+    return args
+
+
 
 def quantize_model(model, weight_quant='per_tensor', act_quant='per_tensor', quantize_bmm_input=True):
     for name, m in model.model.named_modules():
@@ -113,15 +133,16 @@ class Evaluator:
 
 
 if __name__ == "__main__":
-    model_name = 'facebook/opt-125m'
-    # model_name = 'facebook/opt-6.7b'
-    filename = 'opt-125m.pt'
+    args = parse_args()
+    model_name = args.model_name
+    filename = f"{args.strategy}_{args.file_name}"
+
     tokenizer = GPT2Tokenizer.from_pretrained(model_name)
     dataset = load_dataset('lambada', split='validation[:1000]')
     evaluator = Evaluator(dataset, tokenizer, 'cuda')
     # model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-
-
+    #
+    #
     # model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
     # acc_fp16 = evaluator.evaluate(model_fp16)
     # print(f'Original model (fp16) accuracy: {acc_fp16}')
@@ -146,9 +167,9 @@ if __name__ == "__main__":
     #     model_quant = IQRclipping_model(model_fp16 , act_quant=quant_type)
     #     acc = evaluator.evaluate(model_quant)
     #     print(f'{qt_name} quantized model , accuracy: {acc}')
-    #
+
     # model = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    # act_scales = torch.load('act_scales/'+filename) # it is generated before test
+    # act_scales = torch.load('act_scales/'+ args.file_name) # it is generated before test
     # smooth_lm(model, act_scales, 0.5)
     # model_smoothquant_w8a8 = quantize_model(model)
     # # print(model_smoothquant_w8a8)
