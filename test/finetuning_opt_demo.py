@@ -10,8 +10,10 @@ sys.path.append(parent_dir)
 
 
 import torch
+import transformers
 from transformers.models.opt.modeling_opt import OPTAttention, OPTDecoderLayer, OPTForCausalLM
 from transformers import GPT2Tokenizer
+from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 from smoothquant.smooth import smooth_lm
 from smoothquant.fake_quant import W8A8Linear
 from smoothquant.fake_clipping import ClippingLinear
@@ -133,22 +135,65 @@ class Evaluator:
         acc = hit / total
         return acc
 
+class Trainer:
+    def __init__(self, dataset, tokenizer, device, batch_size=16):
+        self.dataset = dataset
+        self.tokenizer = tokenizer
+        self.device = device
+        self.batch_size = batch_size
+        # tokenize the dataset
+        def tokenize_function(examples):
+            example = self.tokenizer(examples['text'])
+            return example
 
+        self.dataset = self.dataset.map(tokenize_function, batched=True)
+        self.dataset.set_format(type='torch', columns=['input_ids'])
+
+
+    def train(self, model):
+        trainer = transformers.Trainer(
+            model=model,
+            train_dataset=self.dataset,
+            args=transformers.TrainingArguments(
+                per_device_train_batch_size=self.batch_size,
+                gradient_accumulation_steps=4,
+                warmup_steps=100,
+                max_steps=200,
+                learning_rate=2e-4,
+                fp16=True,
+                logging_steps=1,
+                output_dir='outputs'
+            ),
+            data_collator=transformers.DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
+        )
+        trainer.train()
 
 if __name__ == "__main__":
     args = parse_args()
     model_name = args.model_name
     # filename = f"{args.strategy}_{args.file_name}"
     tokenizer = GPT2Tokenizer.from_pretrained(model_name)
-    dataset = load_dataset('lambada', split='test')
-    evaluator = Evaluator(dataset, tokenizer, 'cuda')
-    # model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    #
-    #
-    # model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    # acc_fp16 = evaluator.evaluate(model_fp16)
-    # print(f'Original model (fp16) accuracy: {acc_fp16}')
-    #
+    train_dataset = load_dataset('lambada', split='train')
+    test_dataset = load_dataset('lambada', split='test')
+
+    trainer = Trainer(train_dataset, tokenizer, 'cuda')
+    evaluator = Evaluator(test_dataset, tokenizer, 'cuda')
+
+    peft_config = LoraConfig(
+        task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1
+    )
+
+
+    model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
+
+    model = get_peft_model(model_fp16, peft_config)
+    model.print_trainable_parameters()
+
+    trainer.train(model)
+
+    acc_fp16 = evaluator.evaluate(model_fp16)
+    print(f'Original model (fp16) accuracy: {acc_fp16}')
+
     # model_w8a8 = quantize_model(model_fp16)
     # # print(model_w8a8)
     # acc_w8a8 = evaluator.evaluate(model_w8a8)
@@ -180,11 +225,11 @@ if __name__ == "__main__":
     # print(f'SmoothQuant W8A8 quantized model accuracy: {acc_smoothquant_w8a8}')
 
 
-    for strategy in ["IQR_total"]:
-        filename = f"{strategy}_{args.file_name}"
-        model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-        outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
-        # upper_bound = torch.load('upper_bound/'+filename)
-        model_quant = outlier_fix_model(model_fp16, act_quant=args.act_quant ,outlier_dict=outlier_indices, upper_bound={})
-        acc =  evaluator.evaluate(model_quant)
-        print(filename + f'outlier quantized model , accuracy: {acc}')
+    # for strategy in ["IQR_total"]:
+    #     filename = f"{strategy}_{args.file_name}"
+    #     model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
+    #     outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
+    #     # upper_bound = torch.load('upper_bound/'+filename)
+    #     model_quant = outlier_fix_model(model_fp16, act_quant=args.act_quant ,outlier_dict=outlier_indices, upper_bound={})
+    #     acc =  evaluator.evaluate(model_quant)
+    #     print(filename + f'outlier quantized model , accuracy: {acc}')

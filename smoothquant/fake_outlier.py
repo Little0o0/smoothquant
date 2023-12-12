@@ -77,10 +77,27 @@ def clipping_quantize_activation_per_tensor_absmax(t, outlier_idx=None, upper_bo
     t = t.view(-1, t_shape[-1])
     q_max = 2 ** (n_bits - 1) - 1
     max_range = t.abs().max()
+
+    try:
+        assert max_range == get_upper_bound(t, outlier_idx=outlier_idx)
+    except:
+        print(max_range, get_upper_bound(t, outlier_idx=outlier_idx))
+
     # scales = max_range.clamp(min=1e-5).div(q_max)
     scales = max_range.clamp(min=1e-5).div(q_max)
     t = t.div(scales).round().mul(scales)
     return t.to(torch.float16)
+
+def fake_clipping_quantize_activation(t, outlier_idx=None, upper_bound=None, n_bits=8):
+    abs_max = t.abs().max()
+    t = clipping_activation(t, upper_bound=upper_bound, outlier_idx=outlier_idx)
+    t_shape = t.shape
+    t = t.view(-1, t_shape[-1])
+    q_max = 2 ** (n_bits - 1) - 1
+    scales = abs_max.clamp(min=1e-5).div(q_max)
+    t = t.div(scales).round().mul(scales)
+    return t.to(torch.float16)
+
 
 class IQRClippingLinear(nn.Module):
     def __init__(self, in_features, out_features, bias=True,  act_quant='per_token', quantize_output=False):
@@ -189,6 +206,12 @@ class OutlierLinear(nn.Module):
             self.act_quant_name = 'per_tensor'
             self.act_quant = partial(
                 clipping_quantize_activation_per_tensor_absmax, outlier_idx=self.outlier_idx,upper_bound=upper_bound, n_bits=8)
+
+        elif act_quant == 'fake_clipping_quantize':
+            self.act_quant_name = 'fake_clipping_quantize'
+            self.act_quant = partial(
+                fake_clipping_quantize_activation, outlier_idx=self.outlier_idx,upper_bound=upper_bound, n_bits=8)
+
         elif act_quant == 'clipping_only':
             self.act_quant_name = 'clipping_only'
             self.act_quant = partial(clipping_activation, outlier_idx=self.outlier_idx,upper_bound=upper_bound)
@@ -217,19 +240,18 @@ class OutlierLinear(nn.Module):
 
     @torch.no_grad()
     def forward(self, x):
-        q_x = self.act_quant(x)
         up = get_upper_bound(x, self.outlier_idx)
-        up = up.to(q_x.device)
+        up = up.to(x.device)
+        q_x = self.act_quant(x)
         if self.outlier_features != 0:
             out_x = x[..., self.outlier_idx]
-            v_abs  =  torch.maximum(torch.abs(out_x)-up, torch.tensor(0.))
-            out_x  = out_x/torch.abs(out_x) * v_abs
+            out_x = torch.sign(out_x) * torch.maximum(torch.abs(out_x) - up, torch.tensor(0.))
             res_y = torch.functional.F.linear(out_x, self.out_weight)
         else:
-            res_y = 0
-        y = torch.functional.F.linear(q_x, self.weight, self.bias)
+            res_y = torch.tensor(0.).to(torch.float16).to(x.device)
+        y = torch.functional.F.linear(q_x, self.weight, self.bias) + res_y
         q_y = self.output_quant(y)
-        return q_y + res_y
+        return q_y
 
     @staticmethod
     def from_float(module, outlier_dict:Counter, upper_bound:dict=None, weight_quant='per_tensor', act_quant='per_tensor', quantize_output=False):
@@ -247,12 +269,12 @@ class OutlierLinear(nn.Module):
             new_module.weight = quantize_weight_per_channel_absmax(
                 module.weight, n_bits=8)  # use 8-bit integer for weight
             if new_module.outlier_features != 0:
-                new_module.out_weight = module.weight[...,outlier_idx]
+                new_module.out_weight = module.weight[..., outlier_idx].clone()
         elif weight_quant == 'per_tensor':
             new_module.weight = quantize_weight_per_tensor_absmax(
                 module.weight, n_bits=8)
             if new_module.outlier_features != 0:
-                new_module.out_weight = module.weight[..., outlier_idx]
+                new_module.out_weight = module.weight[..., outlier_idx].clone()
         else:
             raise ValueError(f'Invalid weight_quant: {weight_quant}')
         new_module.weight_quant_name = weight_quant

@@ -28,9 +28,9 @@ def build_model_and_tokenizer(model_name):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model-name', type=str,
-                        default='facebook/opt-6.7b', help='model name')
+                        default='facebook/opt-1.3b', help='model name')
     parser.add_argument('--file-name', type=str,
-                        default='opt-6.7b.pt', help='model name')
+                        default='opt-1.3b.pt', help='model name')
     # parser.add_argument('--output-path', type=str, default='act_scales/opt-1.3b.pt',
     #                     help='where to save the act scales')
     parser.add_argument('--dataset-path', type=str, default='OpenAssistant/oasst1',

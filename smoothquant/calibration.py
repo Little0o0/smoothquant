@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 def get_upper_bound(t, strategy="IQR"):
     bound = t.abs().max()
-    if strategy == "IQR":
+    if strategy in ["IQR", "IQR_total" ]:
         t = t.detach()
         q = torch.tensor([0.25, 0.75])
         q1, q3 = torch.quantile(t.cpu().float(), q)
@@ -38,14 +38,24 @@ def get_act_outlier_idx(model, tokenizer, dataset_path, num_samples=512, seq_len
         in_features = tensor.shape[-1]
         tensor = tensor.view(-1, in_features)
         bound = get_upper_bound(tensor, strategy=strategy)
-        idx = (torch.mean((tensor.abs() > bound).float(), dim=0) >= ratio).nonzero().T[0].tolist()
+        if strategy == "IQR_total":
+            idx = (torch.sum((tensor.abs() > bound).float(), dim=0)).int().tolist()
+            idx_counter = Counter({i:idx[i] for i in range(len(idx))})
+            if name in act_outlier_idx:
+                act_outlier_idx[name] = act_outlier_idx[name] + idx_counter
+                mean_upper_bound[name] += bound
+            else:
+                act_outlier_idx[name] = idx_counter
+                mean_upper_bound[name] = bound
 
-        if name in act_outlier_idx:
-            act_outlier_idx[name] = act_outlier_idx[name] + Counter(idx)
-            mean_upper_bound[name] += bound
         else:
-            act_outlier_idx[name] = Counter(idx)
-            mean_upper_bound[name] = bound
+            idx = (torch.mean((tensor.abs() > bound).float(), dim=0) >= ratio).nonzero().T[0].tolist()
+            if name in act_outlier_idx:
+                act_outlier_idx[name] = act_outlier_idx[name] + Counter(idx)
+                mean_upper_bound[name] += bound
+            else:
+                act_outlier_idx[name] = Counter(idx)
+                mean_upper_bound[name] = bound
 
     def stat_input_hook(m, x, y, name):
         if isinstance(x, tuple):
