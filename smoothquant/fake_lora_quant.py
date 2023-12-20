@@ -127,7 +127,7 @@ class W8A8Linear(nn.Module):
 
         assert isinstance(module, torch.nn.Linear)
 
-        if len(outlier_dict) == 0:
+        if len(outlier_dict) != 0:
             max_outlier_features = module.in_features // 100
             outlier_idx = [x[0] for x in outlier_dict.most_common(max_outlier_features)]
         else:
