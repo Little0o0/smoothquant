@@ -3,6 +3,9 @@ scripts/
 int8_models/
 .DS_Store
 
+act_scales/
+outputs/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
