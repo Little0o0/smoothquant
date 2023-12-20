@@ -110,8 +110,8 @@ class Trainer:
                 train_dataset = self.train_dataset,
                 eval_dataset = self.test_dataset,
                 args=transformers.TrainingArguments(
-                    per_device_train_batch_size=self.batch_size,
-                    # gradient_accumulation_steps=4,
+                    per_device_train_batch_size = self.batch_size,
+                    gradient_accumulation_steps = 4,
                     warmup_steps=100,
                     # max_steps=200,
                     num_train_epochs = epochs,
@@ -164,16 +164,16 @@ if __name__ == "__main__":
     test_dataset = test_dataset.map(tokenize_function, batched=True)
     test_dataset.set_format(type='torch', columns=['input_ids'])
 
-    model = build_lora_model(model_name)
-    trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+    # model = build_lora_model(model_name)
+    # trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
 
-    acc_fp32 = trainer.evaluate(model)
-    print(f'Original model (fp32) before fine tuning accuracy: {acc_fp32}')
+    # acc_fp32 = trainer.evaluate(model)
+    # print(f'Original model (fp32) before fine tuning accuracy: {acc_fp32}')
 
-    trainer.train()
-
-    acc_fp32 = trainer.evaluate(model)
-    print(f'Original model (fp32) after fine tuning accuracy: {acc_fp32}')
+    # trainer.train()
+    #
+    # acc_fp32 = trainer.evaluate(model)
+    # print(f'Original model (fp32) after fine tuning accuracy: {acc_fp32}')
 
     model = build_lora_model(model_name)
     model = quantize_lora_model(model)
