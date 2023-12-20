@@ -1,5 +1,6 @@
 import torch
 from smoothquant.fake_outlier import OutlierLinear
+from smoothquant.fake_lora_quant import W8A8Linear
 from collections import Counter
 from transformers.models.opt.modeling_opt import OPTAttention, OPTDecoderLayer, OPTForCausalLM
 
@@ -32,4 +33,32 @@ def outlier_fix_model(model, outlier_dict:dict, upper_bound:dict = {},  weight_q
             m.v_proj = OutlierLinear.from_float(
                 m.v_proj, outlier_dict=outlier_dict[v_name], upper_bound=v_upper, weight_quant=weight_quant, act_quant=act_quant, quantize_output=quantize_bmm_input)
             m.out_proj = OutlierLinear.from_float(m.out_proj, outlier_dict=outlier_dict[o_name], upper_bound=o_upper, weight_quant=weight_quant, act_quant=act_quant)
+    return model
+
+
+def lora_outlier_model(model, outlier_dict:dict, weight_quant='per_tensor_absmax', act_quant='per_tensor_absmax', quantize_bmm_input=True, lora_flag=True):
+
+    for name, m in model.model.named_modules():
+        if isinstance(m, OPTDecoderLayer):
+            fc1_name =  name + ".fc1"
+            fc2_name =  name + ".fc2"
+            m.fc1 = W8A8Linear.from_float(m.fc1, outlier_dict=outlier_dict[fc1_name], weight_quant=weight_quant, act_quant=act_quant)
+            m.fc2 = W8A8Linear.from_float(m.fc2, outlier_dict=outlier_dict[fc2_name], weight_quant=weight_quant, act_quant=act_quant)
+
+        elif isinstance(m, OPTAttention):
+            q_name = name + ".q_proj"
+            k_name = name + ".k_proj"
+            v_name = name + ".v_proj"
+            o_name = name + ".out_proj"
+            m.q_proj.base_layer = W8A8Linear.from_float(
+                m.q_proj.base_layer, outlier_dict=outlier_dict[q_name], weight_quant=weight_quant,
+                act_quant=act_quant, quantize_output=quantize_bmm_input)
+            m.k_proj = W8A8Linear.from_float(
+                m.k_proj, outlier_dict=outlier_dict[k_name], weight_quant=weight_quant,
+                act_quant=act_quant, quantize_output=quantize_bmm_input)
+            m.v_proj.base_layer = W8A8Linear.from_float(
+                m.v_proj.base_layer, outlier_dict=outlier_dict[v_name], weight_quant=weight_quant,
+                act_quant=act_quant, quantize_output=quantize_bmm_input)
+            m.out_proj = W8A8Linear.from_float(m.out_proj, outlier_dict=outlier_dict[o_name], weight_quant=weight_quant, act_quant=act_quant)
+
     return model

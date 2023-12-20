@@ -140,7 +140,7 @@ if __name__ == "__main__":
     model_name = args.model_name
     # filename = f"{args.strategy}_{args.file_name}"
     tokenizer = GPT2Tokenizer.from_pretrained(model_name)
-    dataset = load_dataset('lambada', split='test')
+    dataset = load_dataset('lambada', split='test[:8]')
     evaluator = Evaluator(dataset, tokenizer, 'cuda')
     # model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
     #
@@ -171,20 +171,20 @@ if __name__ == "__main__":
     # #     print(f'{qt_name} quantized model , accuracy: {acc}')
     #
 
-    # model = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    # act_scales = torch.load('act_scales/'+ args.file_name) # it is generated before test
-    # smooth_lm(model, act_scales, 0.5)
-    # model_smoothquant_w8a8 = quantize_model(model)
-    # # print(model_smoothquant_w8a8)
-    # acc_smoothquant_w8a8 = evaluator.evaluate(model_smoothquant_w8a8)
-    # print(f'SmoothQuant W8A8 quantized model accuracy: {acc_smoothquant_w8a8}')
+    model = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
+    act_scales = torch.load('act_scales/'+ args.file_name) # it is generated before test
+    smooth_lm(model, act_scales, 0.5, False)
+    model_smoothquant_w8a8 = quantize_model(model)
+    # print(model_smoothquant_w8a8)
+    acc_smoothquant_w8a8 = evaluator.evaluate(model_smoothquant_w8a8)
+    print(f'SmoothQuant W8A8 quantized model accuracy: {acc_smoothquant_w8a8}')
 
 
-    for strategy in ["IQR_total"]:
-        filename = f"{strategy}_{args.file_name}"
-        model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-        outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
-        # upper_bound = torch.load('upper_bound/'+filename)
-        model_quant = outlier_fix_model(model_fp16, act_quant=args.act_quant ,outlier_dict=outlier_indices, upper_bound={})
-        acc =  evaluator.evaluate(model_quant)
-        print(filename + f'outlier quantized model , accuracy: {acc}')
+    # for strategy in ["IQR_total"]:
+    #     filename = f"{strategy}_{args.file_name}"
+    #     model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
+    #     outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
+    #     # upper_bound = torch.load('upper_bound/'+filename)
+    #     model_quant = outlier_fix_model(model_fp16, act_quant=args.act_quant ,outlier_dict=outlier_indices, upper_bound={})
+    #     acc =  evaluator.evaluate(model_quant)
+    #     print(filename + f'outlier quantized model , accuracy: {acc}')

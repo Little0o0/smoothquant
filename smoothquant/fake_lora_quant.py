@@ -1,83 +1,145 @@
+from typing import Any
+
 import torch
 from torch import nn
 from functools import partial
 from torch.autograd import Function
-import torch.nn.functional as F
+from collections import Counter
+
+class per_channel_quantization_absmax(Function):
+    @staticmethod
+    def forward(ctx, t, n_bits = 8, *args, **kwargs):
+        # t: ( out_channel * in_channel ) or ( batch * token * in_channel )
+        scales = t.abs().max(dim=-1, keepdim=True)[0]
+        q_max = 2 ** (n_bits - 1) - 1
+        scales = scales.clamp(min=1e-5).div(q_max)
+        t = t.div(scales).round().mul(scales)
+        return t
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output
+
+class per_tensor_quantization_absmax(Function):
+    @staticmethod
+    def forward(ctx, t, n_bits = 8, *args, **kwargs):
+        scales = t.abs().max()
+        q_max = 2 ** (n_bits - 1) - 1
+        scales = scales.clamp(min=1e-5).div(q_max)
+        t = t.div(scales).round().mul(scales)
+        return t
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output
 
 
 
-def per_channel_quantization_absmax(t, n_bits=8):
-    # t: ( out_channel * in_channel ) or ( batch * token * in_channel )
-    scales = t.abs().max(dim=-1, keepdim=True)[0]
-    q_max = 2 ** (n_bits-1)-1
-    scales = scales.clamp(min=1e-5).div(q_max)
-    t = t.div(scales).round().mul(scales)
+class no_quantization(Function):
+    @staticmethod
+    def forward(ctx, t, *args, **kwargs):
+        return t
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output
+
+def clipping_activation(t, outlier_idx=None,):
+    upper_bound = get_upper_bound(t, outlier_idx=outlier_idx)
+    # max_range = torch.min(t.abs().max(), upper_bound.to(t.device))
+    t = t.clamp(min = -upper_bound, max = upper_bound)
     return t
 
-def per_tensor_quantization_absmax(t, n_bits=8):
-    scales = t.abs().max()
-    q_max = 2 ** (n_bits - 1) - 1
-    scales = scales.clamp(min=1e-5).div(q_max)
-    t = t.div(scales).round().mul(scales)
+def get_upper_bound(t, outlier_idx=None):
+    if outlier_idx is None:
+        return t.abs().max()
+    in_features = t.shape[-1]
+    select_channels = [i for i in range(in_features) if i not in outlier_idx]
+    upper_bound = t[..., select_channels].abs().max()
+    return upper_bound
+
+def clipping_activation(t, upper_bound=None):
+    t = t.clamp(min=-upper_bound, max=upper_bound)
     return t
 
-# TODO
-# add per_tensor_clipping etc
 
-
-Quant_Functions = {
-    "per_channel_absmax": per_channel_quantization_absmax,
-    "per_tensor_absmax": per_tensor_quantization_absmax,
-
+quant_func = {
+    "per_channel_absmax" : per_channel_quantization_absmax,
+    "per_tensor_absmax" : per_tensor_quantization_absmax,
+    "None" : no_quantization
 }
 
 
-class QuantLinearFunction(Function):
-    # Note that forward, setup_context, and backward are @staticmethods
-    @staticmethod
-    def forward(input, weight, bias,
-                flag_quant = True,
-                act_quant="per_tensor_absmax",
-                weight_quant="per_tensor_absmax",
-                indices = None):
+class W8A8Linear(nn.Module):
+    def __init__(self, in_features, out_features, bias=True, act_quant = 'per_tensor_absmax', quantize_output=False, outlier_idx:list = [],):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.outlier_idx = outlier_idx
+        self.outlier_features = len(self.outlier_idx)
+        self.register_buffer('weight', torch.randn(self.out_features,
+                                                   self.in_features, dtype=torch.float16, requires_grad=False))
+        if self.outlier_features != 0:
+            self.register_buffer('out_weight', torch.randn(self.out_features,
+                                                          self.outlier_features,
+                                                          dtype=torch.float16,
+                                                          requires_grad=False))
 
-        if not flag_quant:
-            output = F.linear(input, weight)
+        if bias:
+            self.register_buffer('bias', torch.zeros(
+                (1, self.out_features), dtype=torch.float16, requires_grad=False))
         else:
-            Qa = Quant_Functions[act_quant]
-            Qw = Quant_Functions[weight_quant]
-            output = F.linear(Qa(input), Qw(weight))
-        if bias is not None:
-            output += bias.view(1,1,-1).expand_as(output)
-        return output
+            self.register_buffer('bias', None)
+
+        self.Qa = quant_func[act_quant].apply
+
+        if quantize_output:
+            self.Qo = self.Qa
+        else:
+            self.Qo = quant_func["None"].apply
+
+    def to(self, *args, **kwargs):
+        super(W8A8Linear, self).to(*args, **kwargs)
+        self.weight = self.weight.to(*args, **kwargs)
+        if self.bias is not None:
+            self.bias = self.bias.to(*args, **kwargs)
+        return self
+
+    def forward(self, x):
+        if self.outlier_features != 0:
+            up = get_upper_bound(x, self.outlier_idx)
+            up = up.to(x.device)
+            x = clipping_activation(x, up)
+            out_x = x[..., self.outlier_idx]
+            out_x = torch.sign(out_x) * torch.maximum(torch.abs(out_x) - up, torch.tensor(0.))
+            res_y = torch.functional.F.linear(out_x, self.out_weight)
+        else:
+            res_y = torch.tensor(0.).to(torch.float16).to(x.device)
+
+        q_x = self.Qa(x)
+        y = torch.functional.F.linear(q_x, self.weight, self.bias) + res_y
+        q_y = self.Qo(y)
+
+        return q_y
 
     @staticmethod
-    # inputs is a Tuple of all of the inputs passed to forward.
-    # output is the output of the forward().
-    def setup_context(ctx, inputs, output):
-        input, weight, bias, _, _, _, _ = inputs
-        ctx.save_for_backward(input, weight, bias)
+    def from_float(module, outlier_dict:Counter={}, act_quant = 'per_tensor_absmax', weight_quant ='per_tensor_absmax' , quantize_output=False):
 
-    # This function has only a single output, so it gets only one gradient
-    @staticmethod
-    def backward(ctx, grad_output):
-        # This is a pattern that is very convenient - at the top of backward
-        # unpack saved_tensors and initialize all gradients w.r.t. inputs to
-        # None. Thanks to the fact that additional trailing Nones are
-        # ignored, the return statement is simple even when the function has
-        # optional inputs.
-        input, weight, bias = ctx.saved_tensors
-        grad_input = grad_weight = grad_bias = None
+        assert isinstance(module, torch.nn.Linear)
 
-        # These needs_input_grad checks are optional and there only to
-        # improve efficiency. If you want to make your code simpler, you can
-        # skip them. Returning gradients for inputs that don't require it is
-        # not an error.
-        if ctx.needs_input_grad[0]:
-            grad_input = grad_output.mm(weight)
-        if ctx.needs_input_grad[1]:
-            grad_weight = grad_output.t().mm(input)
-        if bias is not None and ctx.needs_input_grad[2]:
-            grad_bias = grad_output.sum(0)
+        max_outlier_features = module.in_features // 100
+        outlier_idx = [x[0] for x in outlier_dict.most_common(max_outlier_features)]
 
-        return grad_input, grad_weight, grad_bias
+        new_module = W8A8Linear(
+            module.in_features, module.out_features, module.bias is not None, act_quant=act_quant, quantize_output=quantize_output, outlier_idx=outlier_idx)
+
+        Qw = quant_func[weight_quant].apply
+
+        new_module.weight = Qw(module.weight)
+        if new_module.outlier_features != 0:
+            new_module.out_weight = module.weight[..., outlier_idx].clone()
+
+        if module.bias is not None:
+            new_module.bias = module.bias
+
+        return new_module

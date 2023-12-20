@@ -8,7 +8,6 @@ parent_dir = os.path.dirname(current_dir)
 # Add the parent directory to sys.path
 sys.path.append(parent_dir)
 
-
 import torch
 
 from transformers import (
@@ -18,6 +17,7 @@ from transformers import (
 import argparse
 
 from smoothquant.calibration import get_act_scales
+from smoothquant.model import build_lora_model
 
 def build_model_and_tokenizer(model_name):
     tokenizer = AutoTokenizer.from_pretrained(model_name, model_max_length=512)
@@ -45,6 +45,7 @@ def parse_args():
 def main():
     args = parse_args()
     model, tokenizer = build_model_and_tokenizer(args.model_name)
+    # model = build_lora_model(args.model_name) # comment it when use PTQ
 
     # if not os.path.exists(args.dataset_path):
     #     print(f'Cannot find the dataset at {args.dataset_path}')

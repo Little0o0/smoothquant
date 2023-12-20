@@ -92,6 +92,7 @@ class W8A8Linear(nn.Module):
     @staticmethod
     def from_float(module, weight_quant='per_channel', act_quant='per_token', quantize_output=False):
         assert isinstance(module, torch.nn.Linear)
+
         new_module = W8A8Linear(
             module.in_features, module.out_features, module.bias is not None, act_quant=act_quant, quantize_output=quantize_output)
         if weight_quant == 'per_channel':

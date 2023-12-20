@@ -8,62 +8,75 @@ parent_dir = os.path.dirname(current_dir)
 # Add the parent directory to sys.path
 sys.path.append(parent_dir)
 
-
+import numpy as np
 import torch
+import torch.nn as nn
 import transformers
 from transformers.models.opt.modeling_opt import OPTAttention, OPTDecoderLayer, OPTForCausalLM
 from transformers import GPT2Tokenizer
+from peft.tuners.lora import LoraLayer
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 from smoothquant.smooth import smooth_lm
-from smoothquant.fake_quant import W8A8Linear
+from smoothquant.fake_lora_quant import W8A8Linear
 from smoothquant.fake_clipping import ClippingLinear
 from smoothquant.fake_outlier import IQRClippingLinear
-from smoothquant.outlier import outlier_fix_model
+from smoothquant.model import build_lora_model
+from smoothquant.outlier import outlier_fix_model, lora_outlier_model
 from datasets import load_dataset
 from tqdm import tqdm
 import argparse
 
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model-name', type=str,
-                        default='facebook/opt-1.3b', help='model name')
+                        default='facebook/opt-6.7b', help='model name')
     parser.add_argument('--file-name', type=str,
-                        default='opt-1.3b.pt', help='model name')
+                        default='opt-6.7b.pt', help='model name')
     # parser.add_argument('--output-path', type=str, default='outlier_idx/opt-1.3b.pt',
     #                     help='where to save the act scales')
     parser.add_argument('--dataset-path', type=str, default='OpenAssistant/oasst1',
                         help='location of the calibration dataset, we use the validation set of the oasst1 validation dataset')
-    parser.add_argument('--num-samples', type=int, default=512)
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--seq-len', type=int, default=512)
     parser.add_argument('--strategy', type=str,
                         default='IQR_total', help='outlier detection strategy')
-    parser.add_argument('--act_quant', type=str, default="per_tensor",
-                        help='for clipping only [None|per_tensor|per_token|fake_clipping_quantize]')
+    parser.add_argument('--act_quant', type=str, default="per_tensor_absmax",
+                        help='for clipping only [None|per_tensor_absmax|]')
 
     args = parser.parse_args()
     return args
 
 
+def linear_quant(m, weight_quant, act_quant, quantize_bmm_input):
+    return W8A8Linear.from_float(m, weight_quant=weight_quant, act_quant=act_quant, quantize_output=quantize_bmm_input)
 
-def quantize_model(model, weight_quant='per_tensor', act_quant='per_tensor', quantize_bmm_input=True):
+def lora_linear_quant(m, weight_quant, act_quant, quantize_bmm_input=False):
+    if isinstance(m, LoraLayer):
+        m.base_layer = linear_quant(m.base_layer, weight_quant, act_quant, quantize_bmm_input)
+        return m
+    elif isinstance(m, nn.Linear):
+        return linear_quant(m, weight_quant, act_quant, quantize_bmm_input)
+    else:
+        raise Exception("Error layer !!! ")
+
+def quantize_lora_model(model, weight_quant='per_tensor_absmax', act_quant='per_tensor_absmax', quantize_bmm_input=True):
     for name, m in model.model.named_modules():
         if isinstance(m, OPTDecoderLayer):
-            m.fc1 = W8A8Linear.from_float(m.fc1, weight_quant=weight_quant, act_quant=act_quant)
-            m.fc2 = W8A8Linear.from_float(m.fc2, weight_quant=weight_quant, act_quant=act_quant)
+            m.fc1 = lora_linear_quant(m.fc1, weight_quant, act_quant)
+            m.fc2 = lora_linear_quant(m.fc2, weight_quant, act_quant)
         elif isinstance(m, OPTAttention):
             # Her we simulate quantizing BMM inputs by quantizing the output of q_proj, k_proj, v_proj
-            m.q_proj = W8A8Linear.from_float(
-                m.q_proj, weight_quant=weight_quant, act_quant=act_quant, quantize_output=quantize_bmm_input)
-            m.k_proj = W8A8Linear.from_float(
-                m.k_proj, weight_quant=weight_quant, act_quant=act_quant, quantize_output=quantize_bmm_input)
-            m.v_proj = W8A8Linear.from_float(
-                m.v_proj, weight_quant=weight_quant, act_quant=act_quant, quantize_output=quantize_bmm_input)
-            m.out_proj = W8A8Linear.from_float(m.out_proj, weight_quant=weight_quant, act_quant=act_quant)
+            m.q_proj = lora_linear_quant(m.q_proj, weight_quant, act_quant, quantize_bmm_input)
+            m.k_proj = lora_linear_quant(m.k_proj, weight_quant, act_quant, quantize_bmm_input)
+            m.v_proj = lora_linear_quant(m.v_proj, weight_quant, act_quant, quantize_bmm_input)
+            m.out_proj = lora_linear_quant(m.out_proj, weight_quant, act_quant, quantize_bmm_input)
     return model
 
 
-def IQRclipping_model(model, weight_quant='per_tensor',
-                   act_quant='per_tensor',
+def IQRclipping_model(model, weight_quant='per_tensor_absmax',
+                   act_quant='per_tensor_absmax',
                    quantize_bmm_input=True,):
     for name, m in model.model.named_modules():
         if isinstance(m, OPTDecoderLayer):
@@ -81,50 +94,43 @@ def IQRclipping_model(model, weight_quant='per_tensor',
     return model
 
 
-def clipping_model(model, weight_quant='per_tensor',
-                   act_quant='per_tensor',
-                   quantize_bmm_input=True,
-                   quant_step=2**-4, ignore_layer=[]):
-    # act_quant : "per_tensor", "per_token", "clipping_only"
-    for name, m in model.model.named_modules():
-        if name in ignore_layer:
-            clipping = False
-        else:
-            clipping = True
-        if isinstance(m, OPTDecoderLayer):
-            m.fc1 = ClippingLinear.from_float(m.fc1, quant_step=quant_step, weight_quant=weight_quant, act_quant=act_quant, clipping=clipping)
-            m.fc2 = ClippingLinear.from_float(m.fc2, quant_step=quant_step, weight_quant=weight_quant, act_quant=act_quant, clipping=clipping)
-        elif isinstance(m, OPTAttention):
-            # Her we simulate quantizing BMM inputs by quantizing the output of q_proj, k_proj, v_proj
-            m.q_proj = ClippingLinear.from_float(
-                m.q_proj, quant_step=quant_step, weight_quant=weight_quant, act_quant=act_quant, quantize_output=quantize_bmm_input, clipping=clipping)
-            m.k_proj = ClippingLinear.from_float(
-                m.k_proj, quant_step=quant_step, weight_quant=weight_quant, act_quant=act_quant, quantize_output=quantize_bmm_input, clipping=clipping)
-            m.v_proj = ClippingLinear.from_float(
-                m.v_proj, quant_step=quant_step, weight_quant=weight_quant, act_quant=act_quant, quantize_output=quantize_bmm_input, clipping=clipping)
-            m.out_proj = ClippingLinear.from_float(m.out_proj, quant_step=quant_step,weight_quant=weight_quant, act_quant=act_quant, clipping=clipping)
-    return model
 
-class Evaluator:
-    def __init__(self, dataset, tokenizer, device):
-        self.dataset = dataset
+class Trainer:
+    def __init__(self, model, train_dataset, test_dataset, tokenizer, device, batch_size=64, epochs=10):
         self.tokenizer = tokenizer
         self.device = device
-
+        self.batch_size = batch_size
+        self.model = model
         # tokenize the dataset
-        def tokenize_function(examples):
-            example = self.tokenizer(examples['text'])
-            return example
+        self.train_dataset = train_dataset
+        self.test_dataset = test_dataset
 
-        self.dataset = self.dataset.map(tokenize_function, batched=True)
-        self.dataset.set_format(type='torch', columns=['input_ids'])
+        self.trainer = transformers.Trainer(
+                model=model,
+                train_dataset = self.train_dataset,
+                eval_dataset = self.test_dataset,
+                args=transformers.TrainingArguments(
+                    per_device_train_batch_size=self.batch_size,
+                    # gradient_accumulation_steps=4,
+                    warmup_steps=100,
+                    # max_steps=200,
+                    num_train_epochs = epochs,
+                    learning_rate=1e-3,
+                    fp16=True,
+                    # logging_steps=10,
+                    output_dir='outputs'
+                ),
+            data_collator=transformers.DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
+        )
 
-    @torch.no_grad()
+    def train(self):
+        self.trainer.train()
+
     def evaluate(self, model):
         model.eval()
         # The task is to predict the last word of the input.
         total, hit = 0, 0
-        for batch in tqdm(self.dataset):
+        for batch in tqdm(self.test_dataset):
             input_ids = batch['input_ids'].to(self.device).unsqueeze(0)
             label = input_ids[:, -1]
             outputs = model(input_ids)
@@ -135,101 +141,90 @@ class Evaluator:
         acc = hit / total
         return acc
 
-class Trainer:
-    def __init__(self, dataset, tokenizer, device, batch_size=16):
-        self.dataset = dataset
-        self.tokenizer = tokenizer
-        self.device = device
-        self.batch_size = batch_size
-        # tokenize the dataset
-        def tokenize_function(examples):
-            example = self.tokenizer(examples['text'])
-            return example
-
-        self.dataset = self.dataset.map(tokenize_function, batched=True)
-        self.dataset.set_format(type='torch', columns=['input_ids'])
 
 
-    def train(self, model):
-        trainer = transformers.Trainer(
-            model=model,
-            train_dataset=self.dataset,
-            args=transformers.TrainingArguments(
-                per_device_train_batch_size=self.batch_size,
-                gradient_accumulation_steps=4,
-                warmup_steps=100,
-                max_steps=200,
-                learning_rate=2e-4,
-                fp16=True,
-                logging_steps=1,
-                output_dir='outputs'
-            ),
-            data_collator=transformers.DataCollatorForLanguageModeling(self.tokenizer, mlm=False)
-        )
-        trainer.train()
 
 if __name__ == "__main__":
     args = parse_args()
     model_name = args.model_name
-    # filename = f"{args.strategy}_{args.file_name}"
-    tokenizer = GPT2Tokenizer.from_pretrained(model_name)
-    train_dataset = load_dataset('lambada', split='train')
+    batch_size = args.batch_size
+    epochs = args.epochs
+    tokenizer = GPT2Tokenizer.from_pretrained(model_name,load_in_8bit=True,)
+
+    train_dataset = load_dataset('lambada', split='validation')
     test_dataset = load_dataset('lambada', split='test')
 
-    trainer = Trainer(train_dataset, tokenizer, 'cuda')
-    evaluator = Evaluator(test_dataset, tokenizer, 'cuda')
+    def tokenize_function(examples):
+        example = tokenizer(examples['text'])
+        return example
 
-    peft_config = LoraConfig(
-        task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1
-    )
+    train_dataset = train_dataset.map(tokenize_function, batched=True)
+    train_dataset.set_format(type='torch', columns=['input_ids'])
 
+    test_dataset = test_dataset.map(tokenize_function, batched=True)
+    test_dataset.set_format(type='torch', columns=['input_ids'])
 
-    model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
+    model = build_lora_model(model_name)
+    trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
 
-    model = get_peft_model(model_fp16, peft_config)
-    model.print_trainable_parameters()
+    acc_fp32 = trainer.evaluate(model)
+    print(f'Original model (fp32) before fine tuning accuracy: {acc_fp32}')
 
-    trainer.train(model)
+    trainer.train()
 
-    acc_fp16 = evaluator.evaluate(model_fp16)
-    print(f'Original model (fp16) accuracy: {acc_fp16}')
+    acc_fp32 = trainer.evaluate(model)
+    print(f'Original model (fp32) after fine tuning accuracy: {acc_fp32}')
 
-    # model_w8a8 = quantize_model(model_fp16)
-    # # print(model_w8a8)
-    # acc_w8a8 = evaluator.evaluate(model_w8a8)
-    # print(f'Naive W8A8 quantized model accuracy: {acc_w8a8}')
-    # #
-    # model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    # model_w8 = clipping_model(model_fp16, act_quant="None")
-    # acc_w8 = evaluator.evaluate(model_w8)
-    # print(f'w8 model accuracy: {acc_w8}')
+    model = build_lora_model(model_name)
+    model = quantize_lora_model(model)
+    trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
 
+    acc_w8a8 = trainer.evaluate(model)
+    print(f'Naive W8A8 quantized model before fine tuning accuracy: {acc_w8a8}')
+
+    trainer.train()
+    acc_w8a8 = trainer.evaluate(model)
+    print(f'Naive W8A8 quantized model after fine tuning accuracy: {acc_w8a8}')
+
+    # model = build_lora_model(model_name)
+    # model_w8 = quantize_lora_model(model, act_quant="None")
+    # trainer = Trainer(model_w8, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
     #
-    # # quant_types = {
-    # #     "Clipping W8A8": "per_tensor",
-    # #     "Clipping W8" : "clipping_only"
-    # # }
-    # # for qt_name, quant_type in quant_types.items():
-    # #     model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    # #     model_quant = IQRclipping_model(model_fp16 , act_quant=quant_type)
-    # #     acc = evaluator.evaluate(model_quant)
-    # #     print(f'{qt_name} quantized model , accuracy: {acc}')
+    # acc_w8 = trainer.evaluate(model_w8)
+    # print(f'w8 model before fine tuning accuracy: {acc_w8}')
     #
+    # trainer.train()
+    #
+    # acc_w8 = trainer.evaluate(model_w8)
+    # print(f'w8 model after fine tuning accuracy: {acc_w8}')
 
-    # model = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    # act_scales = torch.load('act_scales/'+ args.file_name) # it is generated before test
-    # smooth_lm(model, act_scales, 0.5)
-    # model_smoothquant_w8a8 = quantize_model(model)
-    # # print(model_smoothquant_w8a8)
-    # acc_smoothquant_w8a8 = evaluator.evaluate(model_smoothquant_w8a8)
-    # print(f'SmoothQuant W8A8 quantized model accuracy: {acc_smoothquant_w8a8}')
+    model = build_lora_model(model_name)
+    act_scales = torch.load('act_scales/' + args.file_name)  # it is generated before test
+    smooth_lm(model, act_scales, 0.5)
+
+    model = quantize_lora_model(model)
+    trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+
+    acc_smooth = trainer.evaluate(model)
+    print(f'SmoothQuant W8A8 quantized model before fine tuning accuracy: {acc_smooth}')
+
+    trainer.train()
+
+    acc_smooth = trainer.evaluate(model)
+    print(f'SmoothQuant W8A8 quantized model after fine tuning accuracy: {acc_smooth}')
 
 
-    # for strategy in ["IQR_total"]:
-    #     filename = f"{strategy}_{args.file_name}"
-    #     model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    #     outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
-    #     # upper_bound = torch.load('upper_bound/'+filename)
-    #     model_quant = outlier_fix_model(model_fp16, act_quant=args.act_quant ,outlier_dict=outlier_indices, upper_bound={})
-    #     acc =  evaluator.evaluate(model_quant)
-    #     print(filename + f'outlier quantized model , accuracy: {acc}')
+    filename = f"{args.strategy}_{args.file_name}"
+    model = build_lora_model(model_name)
+    outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
+
+    model = lora_outlier_model(model, act_quant=args.act_quant, outlier_dict=outlier_indices,)
+    trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+
+    acc_lora = trainer.evaluate(model)
+    print(f'LoRA {args.strategy} W8A8 quantized model before fine tuning accuracy: {acc_lora}')
+
+    trainer.train()
+
+    acc_lora = trainer.evaluate(model)
+    print(f'LoRA {args.strategy} W8A8 quantized model after fine tuning accuracy: {acc_lora}')

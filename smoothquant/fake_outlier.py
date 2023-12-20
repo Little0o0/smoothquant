@@ -73,11 +73,8 @@ def clipping_quantize_activation_per_token_absmax(t, upper_bound=None, n_bits=8,
 @torch.no_grad()
 def clipping_quantize_activation_per_tensor_absmax(t, outlier_idx=None, upper_bound=None, n_bits=8):
     t = clipping_activation(t, upper_bound=upper_bound, outlier_idx=outlier_idx)
-    t_shape = t.shape
-    t = t.view(-1, t_shape[-1])
     q_max = 2 ** (n_bits - 1) - 1
     max_range = t.abs().max()
-
     try:
         assert max_range == get_upper_bound(t, outlier_idx=outlier_idx)
     except:

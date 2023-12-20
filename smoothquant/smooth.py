@@ -3,6 +3,17 @@ import torch.nn as nn
 
 from transformers.models.opt.modeling_opt import OPTDecoderLayer
 from transformers.models.bloom.modeling_bloom import BloomBlock
+from peft.tuners.lora import LoraLayer
+
+
+def lora_linear_quant(m, weight_quant, act_quant, quantize_bmm_input=False):
+    if isinstance(m, LoraLayer):
+        m.base_layer = linear_quant(m.base_layer, weight_quant, act_quant, quantize_bmm_input)
+        return m
+    elif isinstance(m, nn.Linear):
+        return linear_quant(m, weight_quant, act_quant, quantize_bmm_input)
+    else:
+        raise Exception("Error layer !!! ")
 
 
 @torch.no_grad()
@@ -31,12 +42,22 @@ def smooth_ln_fcs(ln, fcs, act_scales, alpha=0.5):
 
 
 @torch.no_grad()
-def smooth_lm(model, scales, alpha=0.5):
+def smooth_lm(model, scales, alpha=0.5, LoRA_flag = True):
     for name, module in model.named_modules():
+        if LoRA_flag:
+            name = name.replace("base_model.model.", "")
+
         if isinstance(module, OPTDecoderLayer):
+
             attn_ln = module.self_attn_layer_norm
-            qkv = [module.self_attn.q_proj,
+
+            if LoRA_flag:
+                qkv = [module.self_attn.q_proj.base_layer,
+                       module.self_attn.k_proj, module.self_attn.v_proj.base_layer]
+            else:
+                qkv = [module.self_attn.q_proj,
                    module.self_attn.k_proj, module.self_attn.v_proj]
+
             qkv_input_scales = scales[name + '.self_attn.q_proj']
             smooth_ln_fcs(attn_ln, qkv, qkv_input_scales, alpha)
 
