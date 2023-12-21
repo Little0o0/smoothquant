@@ -18,7 +18,7 @@ class per_channel_quantization_absmax(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        return grad_output
+        return grad_output, None
 
 class per_tensor_quantization_absmax(Function):
     @staticmethod
@@ -31,8 +31,146 @@ class per_tensor_quantization_absmax(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        return grad_output
+        return grad_output, None
 
+
+class per_channel_quantization_clip(Function):
+    @staticmethod
+    def forward(ctx, t, n_bits=8, outlier_idx=[], *args, **kwargs):
+        if len(outlier_idx) != 0:
+            normal_idx = [i for i in range(t.shape[-1]) if i not in outlier_idx]
+            scales = t[..., normal_idx].abs().max(dim=-1, keepdim=True)[0]
+            q_max = 2 ** (n_bits - 1) - 1
+            scales = scales.clamp(min=1e-5).div(q_max)
+            t = t.div(scales).round().mul(scales)
+        else:
+            scales = t.abs().max(dim=-1, keepdim=True)[0]
+            q_max = 2 ** (n_bits - 1) - 1
+            scales = scales.clamp(min=1e-5).div(q_max)
+            t = t.div(scales).round().mul(scales)
+        return t
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None, None
+
+
+class per_channel_quantization_clip_v2(Function):
+    @staticmethod
+    def forward(ctx, t, n_bits=8, outlier_idx=[], *args, **kwargs):
+        if len(outlier_idx) != 0:
+            out_t = torch.zeros_like(t)
+            out_t[..., outlier_idx] = t[..., outlier_idx]
+            normal_idx = [i for i in range(t.shape[-1]) if i not in outlier_idx]
+            scales = t[..., normal_idx].abs().max(dim=-1, keepdim=True)[0]
+            q_max = 2 ** (n_bits - 1) - 1
+            scales = scales.clamp(min=1e-5).div(q_max)
+            out_t[..., normal_idx] = t[..., normal_idx].div(scales).round().mul(scales)
+        else:
+            scales = t.abs().max(dim=-1, keepdim=True)[0]
+            q_max = 2 ** (n_bits - 1) - 1
+            scales = scales.clamp(min=1e-5).div(q_max)
+            t = t.div(scales).round().mul(scales)
+        return t
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None, None
+
+class per_tensor_quantization_clip_v2(Function):
+    @staticmethod
+    def forward(ctx, t, n_bits=8, outlier_idx=[], *args, **kwargs):
+        # if len(outlier_idx) != 0 :
+        #     tmp_t = t[..., outlier_idx].clone()
+        #     t[..., outlier_idx] = 0.
+        if len(outlier_idx) != 0:
+            out_t = torch.zeros_like(t)
+            out_t[..., outlier_idx] = t[..., outlier_idx]
+            normal_idx = [i for i in range(t.shape[-1]) if i not in outlier_idx]
+            scales = t[..., normal_idx].abs().max()
+            q_max = 2 ** (n_bits - 1) - 1
+            scales = scales.clamp(min=1e-5).div(q_max)
+            out_t[..., normal_idx] = t[..., normal_idx].div(scales).round().mul(scales)
+
+        else:
+            scales = t.abs().max()
+            q_max = 2 ** (n_bits - 1) - 1
+            scales = scales.clamp(min=1e-5).div(q_max)
+            t = t.div(scales).round().mul(scales)
+        return t
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None, None
+
+class per_tensor_quantization_simple_clip(Function):
+    @staticmethod
+    def forward(ctx, t, n_bits=8, outlier_idx=[], *args, **kwargs):
+        # if len(outlier_idx) != 0 :
+        #     tmp_t = t[..., outlier_idx].clone()
+        #     t[..., outlier_idx] = 0.
+        if len(outlier_idx) != 0:
+            out_t = torch.zeros_like(t)
+            out_t[..., outlier_idx] = t[..., outlier_idx]
+            normal_idx = [i for i in range(t.shape[-1]) if i not in outlier_idx]
+            scales = t.abs().max()
+            q_max = 2 ** (n_bits - 1) - 1
+            scales = scales.clamp(min=1e-5).div(q_max)
+            out_t[..., normal_idx] = t[..., normal_idx].div(scales).round().mul(scales)
+
+        else:
+            scales = t.abs().max()
+            q_max = 2 ** (n_bits - 1) - 1
+            scales = scales.clamp(min=1e-5).div(q_max)
+            t = t.div(scales).round().mul(scales)
+        return t
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None, None
+
+
+class per_channel_quantization_simple_clip(Function):
+    @staticmethod
+    def forward(ctx, t, n_bits=8, outlier_idx=[], *args, **kwargs):
+        if len(outlier_idx) != 0:
+            out_t = torch.zeros_like(t)
+            out_t[..., outlier_idx] = t[..., outlier_idx]
+            normal_idx = [i for i in range(t.shape[-1]) if i not in outlier_idx]
+            scales = t.abs().max(dim=-1, keepdim=True)[0]
+            q_max = 2 ** (n_bits - 1) - 1
+            scales = scales.clamp(min=1e-5).div(q_max)
+            out_t[..., normal_idx] = t[..., normal_idx].div(scales).round().mul(scales)
+        else:
+            scales = t.abs().max(dim=-1, keepdim=True)[0]
+            q_max = 2 ** (n_bits - 1) - 1
+            scales = scales.clamp(min=1e-5).div(q_max)
+            t = t.div(scales).round().mul(scales)
+        return t
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None, None
+
+class per_tensor_quantization_clip(Function):
+    @staticmethod
+    def forward(ctx, t, n_bits=8, outlier_idx=[], *args, **kwargs):
+        if len(outlier_idx) != 0:
+            normal_idx = [i for i in range(t.shape[-1]) if i not in outlier_idx]
+            scales = t[..., normal_idx].abs().max()
+            q_max = 2 ** (n_bits - 1) - 1
+            scales = scales.clamp(min=1e-5).div(q_max)
+            t= t.div(scales).round().mul(scales)
+        else:
+            scales = t.abs().max()
+            q_max = 2 ** (n_bits - 1) - 1
+            scales = scales.clamp(min=1e-5).div(q_max)
+            t = t.div(scales).round().mul(scales)
+        return t
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output, None, None
 
 
 class no_quantization(Function):
@@ -42,7 +180,7 @@ class no_quantization(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        return grad_output
+        return grad_output, None
 
 def clipping_activation(t, outlier_idx=None,):
     upper_bound = get_upper_bound(t, outlier_idx=outlier_idx)
@@ -66,12 +204,19 @@ def clipping_activation(t, upper_bound=None):
 quant_func = {
     "per_channel_absmax" : per_channel_quantization_absmax,
     "per_tensor_absmax" : per_tensor_quantization_absmax,
+    "per_tensor_clip" : per_tensor_quantization_clip,
+    "per_channel_clip" : per_channel_quantization_clip,
+    "per_tensor_clip_v2" : per_tensor_quantization_clip_v2,
+    "per_channel_clip_v2" : per_channel_quantization_clip_v2,
+    "per_tensor_simple_clip" : per_tensor_quantization_simple_clip,
+    "per_channel_simple_clip" : per_channel_quantization_simple_clip,
     "None" : no_quantization
 }
 
 
-class W8A8Linear(nn.Module):
-    def __init__(self, in_features, out_features, bias=True, act_quant = 'per_tensor_absmax', quantize_output=False, outlier_idx:list = [],):
+
+class ClippingLinear(nn.Module):
+    def __init__(self, in_features, out_features, bias=True, act_quant = 'per_tensor_absmax', quantize_output=False, outlier_idx:list = []):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -99,7 +244,7 @@ class W8A8Linear(nn.Module):
             self.Qo = quant_func["None"].apply
 
     def to(self, *args, **kwargs):
-        super(W8A8Linear, self).to(*args, **kwargs)
+        super(ClippingLinear, self).to(*args, **kwargs)
         self.weight = self.weight.to(*args, **kwargs)
         if self.bias is not None:
             self.bias = self.bias.to(*args, **kwargs)
@@ -133,7 +278,7 @@ class W8A8Linear(nn.Module):
         else:
             outlier_idx = []
 
-        new_module = W8A8Linear(
+        new_module = ClippingLinear(
             module.in_features, module.out_features, module.bias is not None, act_quant=act_quant, quantize_output=quantize_output, outlier_idx=outlier_idx)
 
         Qw = quant_func[weight_quant].apply
@@ -141,6 +286,119 @@ class W8A8Linear(nn.Module):
         new_module.weight = Qw(module.weight)
         if new_module.outlier_features != 0:
             new_module.out_weight = module.weight[..., outlier_idx].clone()
+
+        if module.bias is not None:
+            new_module.bias = module.bias
+
+        return new_module
+
+
+
+class W8A8Linear(nn.Module):
+    def __init__(self, in_features, out_features, bias=True, act_quant = 'per_tensor_absmax', quantize_output=False, nbits=8):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.nbits = nbits
+        self.register_buffer('weight', torch.randn(self.out_features,
+                                                   self.in_features, dtype=torch.float16, requires_grad=False))
+        if bias:
+            self.register_buffer('bias', torch.zeros(
+                (1, self.out_features), dtype=torch.float16, requires_grad=False))
+        else:
+            self.register_buffer('bias', None)
+
+        self.Qa = quant_func[act_quant].apply
+
+        if quantize_output:
+            self.Qo = self.Qa
+        else:
+            self.Qo = quant_func["None"].apply
+
+    def to(self, *args, **kwargs):
+        super(W8A8Linear, self).to(*args, **kwargs)
+        self.weight = self.weight.to(*args, **kwargs)
+        if self.bias is not None:
+            self.bias = self.bias.to(*args, **kwargs)
+        return self
+
+    def forward(self, x):
+        q_x = self.Qa(x, self.nbits)
+        y = torch.functional.F.linear(q_x, self.weight, self.bias)
+        q_y = self.Qo(y)
+
+        return q_y
+
+    @staticmethod
+    def from_float(module, act_quant = 'per_tensor_absmax', weight_quant ='per_tensor_absmax' , quantize_output=False, nbits=8):
+
+        assert isinstance(module, torch.nn.Linear)
+        new_module = W8A8Linear(
+            module.in_features, module.out_features, module.bias is not None, act_quant=act_quant, quantize_output=quantize_output, nbits=nbits)
+
+        Qw = quant_func[weight_quant].apply
+
+        new_module.weight = Qw(module.weight, nbits)
+
+        if module.bias is not None:
+            new_module.bias = module.bias
+
+        return new_module
+
+
+class SimpleClipingLinear(nn.Module):
+    def __init__(self, in_features, out_features, bias=True, act_quant = 'per_tensor_clip', quantize_output=False, outlier_idx:list = [], nbits=8):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.outlier_idx = outlier_idx
+        self.outlier_features = len(self.outlier_idx)
+        self.nbits = nbits
+        self.register_buffer('weight', torch.randn(self.out_features,
+                                                   self.in_features, dtype=torch.float16, requires_grad=False))
+        if bias:
+            self.register_buffer('bias', torch.zeros(
+                (1, self.out_features), dtype=torch.float16, requires_grad=False))
+        else:
+            self.register_buffer('bias', None)
+
+        self.Qa = quant_func[act_quant].apply
+
+        if quantize_output:
+            self.Qo = self.Qa
+        else:
+            self.Qo = quant_func["None"].apply
+
+    def to(self, *args, **kwargs):
+        super(SimpleClipingLinear, self).to(*args, **kwargs)
+        self.weight = self.weight.to(*args, **kwargs)
+        if self.bias is not None:
+            self.bias = self.bias.to(*args, **kwargs)
+        return self
+
+    def forward(self, x):
+        q_x = self.Qa(x, self.nbits, self.outlier_idx)
+        y = torch.functional.F.linear(q_x, self.weight, self.bias)
+        q_y = self.Qo(y, self.nbits)
+        return q_y
+
+    @staticmethod
+    def from_float(module, outlier_dict:Counter={}, act_quant = 'per_tensor_clip', weight_quant ='per_tensor_clip' , quantize_output=False, nbits=8):
+
+        assert isinstance(module, torch.nn.Linear)
+
+        if len(outlier_dict) != 0:
+            max_outlier_features = module.in_features // 100
+            outlier_idx = [x[0] for x in outlier_dict.most_common(max_outlier_features)]
+        else:
+            outlier_idx = []
+
+        new_module = SimpleClipingLinear(
+            module.in_features, module.out_features, module.bias is not None, act_quant=act_quant, quantize_output=quantize_output, outlier_idx=outlier_idx, nbits=nbits)
+
+        Qw = quant_func[weight_quant].apply
+
+        new_module.weight = Qw(module.weight, nbits, outlier_idx,)
 
         if module.bias is not None:
             new_module.bias = module.bias

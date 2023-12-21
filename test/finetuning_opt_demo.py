@@ -17,11 +17,11 @@ from transformers import GPT2Tokenizer
 from peft.tuners.lora import LoraLayer
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 from smoothquant.smooth import smooth_lm
-from smoothquant.fake_lora_quant import W8A8Linear
+from smoothquant.fake_lora_quant import W8A8Linear, SimpleClipingLinear
 from smoothquant.fake_clipping import ClippingLinear
 from smoothquant.fake_outlier import IQRClippingLinear
 from smoothquant.model import build_lora_model
-from smoothquant.outlier import outlier_fix_model, lora_outlier_model
+from smoothquant.outlier import lora_outlier_model, lora_outlier_model_v2
 from datasets import load_dataset
 from tqdm import tqdm
 import argparse
@@ -42,8 +42,18 @@ def parse_args():
     parser.add_argument('--seq-len', type=int, default=512)
     parser.add_argument('--strategy', type=str,
                         default='IQR_total', help='outlier detection strategy')
-    parser.add_argument('--act_quant', type=str, default="per_tensor_absmax",
-                        help='for clipping only [None|per_tensor_absmax|]')
+    parser.add_argument('--act_quant', type=str, default="per_tensor",
+                        help='for clipping only [None|per_channel|per_tensor]')
+    parser.add_argument('--weight_quant', type=str, default="per_tensor",
+                        help='for clipping only [None|per_channel|per_tensor]')
+    parser.add_argument("--full", action='store_true', help='if test full precision model')
+    parser.add_argument("--w8a8", action='store_true', help='if test naive w8a8 precision model')
+    parser.add_argument("--smooth", action='store_true', help='if test smooth w8a8 precision model')
+    parser.add_argument("--clip", action='store_true', help='if test clipping w8a8 precision model')
+    parser.add_argument("--clip_v2", action='store_true', help='if test clipping w8a8 precision model')
+    parser.add_argument("--simple_clip", action='store_true', help='if test clipping w8a8 precision model')
+    parser.add_argument("--train", action='store_true', help='if train model before testing')
+    parser.add_argument("--test", action='store_true', help='if test model before training')
 
     args = parser.parse_args()
     return args
@@ -72,25 +82,6 @@ def quantize_lora_model(model, weight_quant='per_tensor_absmax', act_quant='per_
             m.k_proj = lora_linear_quant(m.k_proj, weight_quant, act_quant, quantize_bmm_input)
             m.v_proj = lora_linear_quant(m.v_proj, weight_quant, act_quant, quantize_bmm_input)
             m.out_proj = lora_linear_quant(m.out_proj, weight_quant, act_quant, quantize_bmm_input)
-    return model
-
-
-def IQRclipping_model(model, weight_quant='per_tensor_absmax',
-                   act_quant='per_tensor_absmax',
-                   quantize_bmm_input=True,):
-    for name, m in model.model.named_modules():
-        if isinstance(m, OPTDecoderLayer):
-            m.fc1 = IQRClippingLinear.from_float(m.fc1, weight_quant=weight_quant, act_quant=act_quant)
-            m.fc2 = IQRClippingLinear.from_float(m.fc2, weight_quant=weight_quant, act_quant=act_quant)
-        elif isinstance(m, OPTAttention):
-            # Her we simulate quantizing BMM inputs by quantizing the output of q_proj, k_proj, v_proj
-            m.q_proj = IQRClippingLinear.from_float(
-                m.q_proj, weight_quant=weight_quant, act_quant=act_quant, quantize_output=quantize_bmm_input)
-            m.k_proj = IQRClippingLinear.from_float(
-                m.k_proj, weight_quant=weight_quant, act_quant=act_quant, quantize_output=quantize_bmm_input)
-            m.v_proj = IQRClippingLinear.from_float(
-                m.v_proj, weight_quant=weight_quant, act_quant=act_quant, quantize_output=quantize_bmm_input)
-            m.out_proj = IQRClippingLinear.from_float(m.out_proj, weight_quant=weight_quant, act_quant=act_quant)
     return model
 
 
@@ -149,6 +140,10 @@ if __name__ == "__main__":
     model_name = args.model_name
     batch_size = args.batch_size
     epochs = args.epochs
+
+    act_quant = "None" if args.act_quant == "None" else f"{args.act_quant}_absmax"
+    weight_quant = "None" if args.weight_quant == "None" else f"{args.weight_quant}_absmax"
+
     tokenizer = GPT2Tokenizer.from_pretrained(model_name,load_in_8bit=True,)
 
     train_dataset = load_dataset('lambada', split='validation')
@@ -164,67 +159,110 @@ if __name__ == "__main__":
     test_dataset = test_dataset.map(tokenize_function, batched=True)
     test_dataset.set_format(type='torch', columns=['input_ids'])
 
+
+    if args.full:
+        model = build_lora_model(model_name)
+        trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+
+        if args.test:
+            acc_fp32 = trainer.evaluate(model)
+            print(f'Original model (fp32) before fine tuning accuracy: {acc_fp32}')
+        if args.train:
+            trainer.train()
+            acc_fp32 = trainer.evaluate(model)
+            print(f'Original model (fp32) after fine tuning accuracy: {acc_fp32}')
+
+    if args.w8a8:
+        model = build_lora_model(model_name)
+        model = quantize_lora_model(model, act_quant=act_quant, weight_quant=weight_quant)
+        trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+
+        if args.test:
+            acc_w8a8 = trainer.evaluate(model)
+            print(f'Naive W8A8 quantized model before fine tuning accuracy: {acc_w8a8}')
+
+        if args.train:
+            trainer.train()
+            acc_w8a8 = trainer.evaluate(model)
+            print(f'Naive W8A8 quantized model after fine tuning accuracy: {acc_w8a8}')
+
     # model = build_lora_model(model_name)
+    # model = quantize_lora_model(model, act_quant="None", weight_quant=weight_quant)
     # trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
-
-    # acc_fp32 = trainer.evaluate(model)
-    # print(f'Original model (fp32) before fine tuning accuracy: {acc_fp32}')
-
-    # trainer.train()
     #
-    # acc_fp32 = trainer.evaluate(model)
-    # print(f'Original model (fp32) after fine tuning accuracy: {acc_fp32}')
-
-    model = build_lora_model(model_name)
-    model = quantize_lora_model(model)
-    trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
-
-    acc_w8a8 = trainer.evaluate(model)
-    print(f'Naive W8A8 quantized model before fine tuning accuracy: {acc_w8a8}')
-
-    trainer.train()
-    acc_w8a8 = trainer.evaluate(model)
-    print(f'Naive W8A8 quantized model after fine tuning accuracy: {acc_w8a8}')
-
-    # model = build_lora_model(model_name)
-    # model_w8 = quantize_lora_model(model, act_quant="None")
-    # trainer = Trainer(model_w8, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
-    #
-    # acc_w8 = trainer.evaluate(model_w8)
+    # acc_w8 = trainer.evaluate(model)
     # print(f'w8 model before fine tuning accuracy: {acc_w8}')
     #
     # trainer.train()
     #
-    # acc_w8 = trainer.evaluate(model_w8)
+    # acc_w8 = trainer.evaluate(model)
     # print(f'w8 model after fine tuning accuracy: {acc_w8}')
 
-    model = build_lora_model(model_name)
-    act_scales = torch.load('act_scales/' + args.file_name)  # it is generated before test
-    smooth_lm(model, act_scales, 0.5)
+    if args.smooth:
+        model = build_lora_model(model_name)
+        act_scales = torch.load('act_scales/' + args.file_name)  # it is generated before test
+        smooth_lm(model, act_scales, 0.5)
+        model = quantize_lora_model(model, act_quant=act_quant, weight_quant=weight_quant)
+        trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+        if args.test:
+            acc_smooth = trainer.evaluate(model)
+            print(f'SmoothQuant W8A8 quantized model before fine tuning accuracy: {acc_smooth}')
 
-    model = quantize_lora_model(model)
-    trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+        if args.train:
+            trainer.train()
+            acc_smooth = trainer.evaluate(model)
+            print(f'SmoothQuant W8A8 quantized model after fine tuning accuracy: {acc_smooth}')
 
-    acc_smooth = trainer.evaluate(model)
-    print(f'SmoothQuant W8A8 quantized model before fine tuning accuracy: {acc_smooth}')
+    if args.simple_clip:
+        act_quant = "None" if args.act_quant == "None" else f"{args.act_quant}_simple_clip"
+        weight_quant = "None" if args.weight_quant == "None" else f"{args.weight_quant}_simple_clip"
 
-    trainer.train()
+        filename = f"{args.strategy}_{args.file_name}"
+        model = build_lora_model(model_name)
+        outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
+        model = lora_outlier_model_v2(model, act_quant=act_quant, weight_quant=weight_quant,outlier_dict=outlier_indices,)
+        trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+        if args.test:
+            acc_lora = trainer.evaluate(model)
+            print(f'LoRA {args.strategy} W8A8 quantized model before fine tuning accuracy: {acc_lora}')
 
-    acc_smooth = trainer.evaluate(model)
-    print(f'SmoothQuant W8A8 quantized model after fine tuning accuracy: {acc_smooth}')
+        if args.train:
+            trainer.train()
+            acc_lora = trainer.evaluate(model)
+            print(f'LoRA {args.strategy} W8A8 quantized model after fine tuning accuracy: {acc_lora}')
 
+    if args.clip:
+        act_quant = "None" if args.act_quant == "None" else f"{args.act_quant}_clip"
+        weight_quant = "None" if args.weight_quant == "None" else f"{args.weight_quant}_clip"
 
-    filename = f"{args.strategy}_{args.file_name}"
-    model = build_lora_model(model_name)
-    outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
+        filename = f"{args.strategy}_{args.file_name}"
+        model = build_lora_model(model_name)
+        outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
+        model = lora_outlier_model_v2(model, act_quant=act_quant, weight_quant=weight_quant,outlier_dict=outlier_indices,)
+        trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+        if args.test:
+            acc_lora = trainer.evaluate(model)
+            print(f'LoRA {args.strategy} W8A8 quantized model before fine tuning accuracy: {acc_lora}')
 
-    model = lora_outlier_model(model, act_quant=args.act_quant, outlier_dict=outlier_indices,)
-    trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+        if args.train:
+            trainer.train()
+            acc_lora = trainer.evaluate(model)
+            print(f'LoRA {args.strategy} W8A8 quantized model after fine tuning accuracy: {acc_lora}')
 
-    acc_lora = trainer.evaluate(model)
-    print(f'LoRA {args.strategy} W8A8 quantized model before fine tuning accuracy: {acc_lora}')
+    if args.clip_v2:
+        act_quant = "None" if args.act_quant == "None" else f"{args.act_quant}_clip_v2"
+        weight_quant = "None" if args.weight_quant == "None" else f"{args.weight_quant}_clip_v2"
 
-    trainer.train()
+        filename = f"{args.strategy}_{args.file_name}"
+        model = build_lora_model(model_name)
+        outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
+        model = lora_outlier_model_v2(model, act_quant=act_quant, weight_quant=weight_quant,outlier_dict=outlier_indices,)
+        trainer = Trainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+        if args.test:
+            acc_lora = trainer.evaluate(model)
+            print(f'LoRA {args.strategy} W8A8 quantized model before fine tuning accuracy: {acc_lora}')
 
-    acc_lora = trainer.evaluate(model)
-    print(f'LoRA {args.strategy} W8A8 quantized model after fine tuning accuracy: {acc_lora}')
+        if args.train:
+            trainer.train()
+            acc_lora = trainer.evaluate(model)
+            print(f'LoRA {args.strategy} W8A8 quantized model after fine tuning accuracy: {acc_lora}')

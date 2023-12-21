@@ -16,7 +16,7 @@ from smoothquant.smooth import smooth_lm
 from smoothquant.fake_quant import W8A8Linear
 from smoothquant.fake_clipping import ClippingLinear
 from smoothquant.fake_outlier import IQRClippingLinear
-from smoothquant.outlier import outlier_fix_model
+from smoothquant.outlier import outlier_fix_model, outlier_fix_model_v2
 from datasets import load_dataset
 from tqdm import tqdm
 import argparse
@@ -37,7 +37,14 @@ def parse_args():
                         default='IQR_total', help='outlier detection strategy')
     parser.add_argument('--act_quant', type=str, default="per_tensor",
                         help='for clipping only [None|per_tensor|per_token|fake_clipping_quantize]')
-
+    parser.add_argument('--weight_quant', type=str, default="per_tensor",
+                        help='for clipping only [None|per_tensor|per_token|fake_clipping_quantize]')
+    parser.add_argument("--full", action='store_true', help='if test full precision model')
+    parser.add_argument("--w8a8", action='store_true', help='if test naive w8a8 precision model')
+    parser.add_argument("--w8", action='store_true', help='if test naive w8a8 precision model')
+    parser.add_argument("--smooth", action='store_true', help='if test smooth w8a8 precision model')
+    parser.add_argument("--clip", action='store_true', help='if test clipping w8a8 precision model')
+    parser.add_argument("--clip_v2", action='store_true', help='if test clipping w8a8 precision model')
     args = parser.parse_args()
     return args
 
@@ -140,51 +147,50 @@ if __name__ == "__main__":
     model_name = args.model_name
     # filename = f"{args.strategy}_{args.file_name}"
     tokenizer = GPT2Tokenizer.from_pretrained(model_name)
-    dataset = load_dataset('lambada', split='test[:8]')
+    dataset = load_dataset('lambada', split='test')
     evaluator = Evaluator(dataset, tokenizer, 'cuda')
-    # model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    #
-    #
-    # model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    # acc_fp16 = evaluator.evaluate(model_fp16)
-    # print(f'Original model (fp16) accuracy: {acc_fp16}')
-    #
-    # model_w8a8 = quantize_model(model_fp16)
-    # # print(model_w8a8)
-    # acc_w8a8 = evaluator.evaluate(model_w8a8)
-    # print(f'Naive W8A8 quantized model accuracy: {acc_w8a8}')
-    # #
-    # model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    # model_w8 = clipping_model(model_fp16, act_quant="None")
-    # acc_w8 = evaluator.evaluate(model_w8)
-    # print(f'w8 model accuracy: {acc_w8}')
 
-    #
-    # # quant_types = {
-    # #     "Clipping W8A8": "per_tensor",
-    # #     "Clipping W8" : "clipping_only"
-    # # }
-    # # for qt_name, quant_type in quant_types.items():
-    # #     model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    # #     model_quant = IQRclipping_model(model_fp16 , act_quant=quant_type)
-    # #     acc = evaluator.evaluate(model_quant)
-    # #     print(f'{qt_name} quantized model , accuracy: {acc}')
-    #
+    if args.full:
+        model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
+        acc_fp16 = evaluator.evaluate(model_fp16)
+        print(f'Original model (fp16) accuracy: {acc_fp16}')
 
-    model = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    act_scales = torch.load('act_scales/'+ args.file_name) # it is generated before test
-    smooth_lm(model, act_scales, 0.5, False)
-    model_smoothquant_w8a8 = quantize_model(model)
-    # print(model_smoothquant_w8a8)
-    acc_smoothquant_w8a8 = evaluator.evaluate(model_smoothquant_w8a8)
-    print(f'SmoothQuant W8A8 quantized model accuracy: {acc_smoothquant_w8a8}')
+    if args.w8a8:
+        model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
+        model_w8a8 = quantize_model(model_fp16)
+        acc_w8a8 = evaluator.evaluate(model_w8a8)
+        print(f'Naive W8A8 quantized model accuracy: {acc_w8a8}')
 
+    if args.w8:
+        model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
+        model_w8 = clipping_model(model_fp16, act_quant="None")
+        acc_w8 = evaluator.evaluate(model_w8)
+        print(f'w8 model accuracy: {acc_w8}')
 
-    # for strategy in ["IQR_total"]:
-    #     filename = f"{strategy}_{args.file_name}"
-    #     model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
-    #     outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
-    #     # upper_bound = torch.load('upper_bound/'+filename)
-    #     model_quant = outlier_fix_model(model_fp16, act_quant=args.act_quant ,outlier_dict=outlier_indices, upper_bound={})
-    #     acc =  evaluator.evaluate(model_quant)
-    #     print(filename + f'outlier quantized model , accuracy: {acc}')
+    if args.smooth:
+        model = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
+        act_scales = torch.load('act_scales/'+ args.file_name) # it is generated before test
+        smooth_lm(model, act_scales, 0.5, False)
+        model_smoothquant_w8a8 = quantize_model(model)
+        acc_smoothquant_w8a8 = evaluator.evaluate(model_smoothquant_w8a8)
+        print(f'SmoothQuant W8A8 quantized model accuracy: {acc_smoothquant_w8a8}')
+
+    if args.clip:
+        filename = f"{args.strategy}_{args.file_name}"
+        model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
+        outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
+        # upper_bound = torch.load('upper_bound/'+filename)
+        model_quant = outlier_fix_model(model_fp16, act_quant=args.act_quant ,outlier_dict=outlier_indices, upper_bound={})
+        acc =  evaluator.evaluate(model_quant)
+        print(filename + f'outlier quantized model , accuracy: {acc}')
+
+    if args.clip_v2:
+        filename = f"{args.strategy}_{args.file_name}"
+        act_quant = args.act_quant + "_clip"
+        weight_quant = args.weight_quant + "_clip"
+        model_fp16 = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map='auto')
+        outlier_indices = torch.load('outlier_idx/'+filename)  # it is generated before test
+        # upper_bound = torch.load('upper_bound/'+filename)
+        model_quant = outlier_fix_model_v2(model_fp16, act_quant=act_quant , weight_quant=weight_quant, outlier_dict=outlier_indices, upper_bound={})
+        acc =  evaluator.evaluate(model_quant)
+        print(filename + f'outlier quantized model , accuracy: {acc}')
