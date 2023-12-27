@@ -282,7 +282,6 @@ if __name__ == "__main__":
             acc_lora = trainer.evaluate(model)
             print(f'outlier_int8_lora {args.strategy} W8A8 quantized model after fine tuning accuracy: {acc_lora}')
 
-
     if args.simple_clip:
         filename = f"{args.strategy}_{args.file_name}"
         model = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, device_map='auto')
@@ -291,12 +290,12 @@ if __name__ == "__main__":
         trainer = LambdaOPTTrainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
         if args.test:
             acc_lora = trainer.evaluate(model)
-            print(f'simple_clip_lora {args.strategy} W8A8 quantized model before fine tuning accuracy: {acc_lora}')
+            print(f'simple_clip {args.strategy} W8A8 quantized model before fine tuning accuracy: {acc_lora}')
 
         if args.train:
             trainer.train()
             acc_lora = trainer.evaluate(model)
-            print(f'simple_clip_lora {args.strategy} W8A8 quantized model after fine tuning accuracy: {acc_lora}')
+            print(f'simple_clip {args.strategy} W8A8 quantized model after fine tuning accuracy: {acc_lora}')
 
     if args.simple_clip_lora:
         filename = f"{args.strategy}_{args.file_name}"
