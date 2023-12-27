@@ -80,9 +80,6 @@ class per_channel_quantization_clip_v2(Function):
 class per_tensor_quantization_clip_v2(Function):
     @staticmethod
     def forward(ctx, t, n_bits=8, outlier_idx=[], *args, **kwargs):
-        # if len(outlier_idx) != 0 :
-        #     tmp_t = t[..., outlier_idx].clone()
-        #     t[..., outlier_idx] = 0.
         if len(outlier_idx) != 0:
             out_t = torch.zeros_like(t)
             out_t[..., outlier_idx] = t[..., outlier_idx]
@@ -208,6 +205,8 @@ quant_func = {
     "per_channel_clip" : per_channel_quantization_clip,
     "per_tensor_clip_v2" : per_tensor_quantization_clip_v2,
     "per_channel_clip_v2" : per_channel_quantization_clip_v2,
+    "per_channel_clip_v3" : per_channel_quantization_absmax,
+    "per_tensor_clip_v3" : per_tensor_quantization_absmax,
     "per_tensor_simple_clip" : per_tensor_quantization_simple_clip,
     "per_channel_simple_clip" : per_channel_quantization_simple_clip,
     "None" : no_quantization
@@ -285,7 +284,7 @@ class ClippingLinear(nn.Module):
 
         new_module.weight = Qw(module.weight)
         if new_module.outlier_features != 0:
-            new_module.out_weight = module.weight[..., outlier_idx].clone()
+            new_module.out_weight.data = module.weight.data[..., outlier_idx]
 
         if module.bias is not None:
             new_module.bias = module.bias
@@ -398,7 +397,85 @@ class SimpleClipingLinear(nn.Module):
 
         Qw = quant_func[weight_quant].apply
 
-        new_module.weight = Qw(module.weight, nbits, outlier_idx,)
+        new_module.weight = Qw(module.weight, nbits,)
+
+        if module.bias is not None:
+            new_module.bias = module.bias
+
+        return new_module
+
+
+
+
+class LoRAClipingLinear(nn.Module):
+    def __init__(self, in_features, out_features, bias=True, act_quant = 'per_tensor_clip', quantize_output=False, outlier_idx:list = [], nbits=8):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.outlier_idx = outlier_idx
+        self.outlier_features = len(self.outlier_idx)
+        self.nbits = nbits
+
+        self.B = torch.nn.parameter.Parameter(torch.zeros(self.out_features, self.outlier_features), requires_grad =True)
+        self.register_buffer('weight', torch.randn(self.out_features,
+                                                   self.in_features, dtype=torch.float16, requires_grad=False))
+        if bias:
+            self.register_buffer('bias', torch.zeros(
+                (1, self.out_features), dtype=torch.float16, requires_grad=False))
+        else:
+            self.register_buffer('bias', None)
+
+        self.Qa = quant_func[act_quant].apply
+
+        if quantize_output:
+            self.Qo = self.Qa
+        else:
+            self.Qo = quant_func["None"].apply
+
+    def to(self, *args, **kwargs):
+        super(LoRAClipingLinear, self).to(*args, **kwargs)
+        self.weight = self.weight.to(*args, **kwargs)
+        self.B = self.B.to(*args, **kwargs)
+        if self.bias is not None:
+            self.bias = self.bias.to(*args, **kwargs)
+        return self
+
+    def forward(self, x):
+
+        if self.outlier_features != 0:
+            normal_idx = [i for i in range(self.in_features) if i not in self.outlier_idx]
+            upper = x[..., normal_idx].abs().max()
+            x_clip = x.clamp(min = -upper, max = upper)
+            x_outlier = (x - x_clip)[..., self.outlier_idx]
+            y_res = torch.functional.F.linear(x_outlier, self.B)
+        else:
+            x_clip = x
+            y_res = 0
+        q_x = self.Qa(x_clip, self.nbits)
+        y = torch.functional.F.linear(q_x, self.weight, self.bias)
+        q_y = self.Qo(y, self.nbits)
+        return q_y + y_res
+
+    @staticmethod
+    def from_float(module, outlier_dict:Counter={}, act_quant = 'per_tensor_clip', weight_quant ='per_tensor_clip' , quantize_output=False, nbits=8):
+
+        assert isinstance(module, torch.nn.Linear)
+
+        if len(outlier_dict) != 0:
+            max_outlier_features = module.in_features // 100
+            outlier_idx = [x[0] for x in outlier_dict.most_common(max_outlier_features)]
+        else:
+            outlier_idx = []
+
+        new_module = LoRAClipingLinear(
+            module.in_features, module.out_features, module.bias is not None, act_quant=act_quant, quantize_output=quantize_output, outlier_idx=outlier_idx, nbits=nbits)
+
+        Qw = quant_func[weight_quant].apply
+
+        if len(outlier_idx) != 0:
+            new_module.B.data = module.weight.data[..., outlier_idx]
+
+        new_module.weight.data = Qw(module.weight.data, nbits,).data
 
         if module.bias is not None:
             new_module.bias = module.bias
