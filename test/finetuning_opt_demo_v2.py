@@ -82,16 +82,16 @@ def quantize_opt_model(model, quantize_bmm_input=True):
 def quantize_outlier_opt_model(model, outlier_dict, quantize_bmm_input=True, B_grad=True):
     for name, m in model.model.named_modules():
         if isinstance(m, OPTDecoderLayer):
-            fc1_name =  name + ".fc1"
-            fc2_name =  name + ".fc2"
+            fc1_name =  "model." + name + ".fc1" if B_grad else name + ".fc1"
+            fc2_name = "model." + name + ".fc2" if B_grad else name + ".fc2"
             m.fc1 = lora_linear_quant(m.fc1, quantize_bmm_input, outlier_dict=outlier_dict[fc1_name], clip = True, B_grad=B_grad)
             m.fc2 = lora_linear_quant(m.fc2, quantize_bmm_input, outlier_dict=outlier_dict[fc2_name], clip = True, B_grad=B_grad)
         elif isinstance(m, OPTAttention):
             # Her we simulate quantizing BMM inputs by quantizing the output of q_proj, k_proj, v_proj
-            q_name = name + ".q_proj"
-            k_name = name + ".k_proj"
-            v_name = name + ".v_proj"
-            o_name = name + ".out_proj"
+            q_name = "model." + name + ".q_proj" if B_grad else name + ".q_proj"
+            k_name = "model." + name + ".k_proj" if B_grad else name + ".k_proj"
+            v_name = "model." + name + ".v_proj" if B_grad else name + ".v_proj"
+            o_name = "model." + name + ".out_proj" if B_grad else name + ".out_proj"
             m.q_proj = lora_linear_quant(m.q_proj, quantize_bmm_input, outlier_dict=outlier_dict[q_name], clip = True, B_grad=B_grad)
             m.k_proj = lora_linear_quant(m.k_proj, quantize_bmm_input, outlier_dict=outlier_dict[k_name], clip = True, B_grad=B_grad)
             m.v_proj = lora_linear_quant(m.v_proj, quantize_bmm_input, outlier_dict=outlier_dict[v_name], clip = True, B_grad=B_grad)
