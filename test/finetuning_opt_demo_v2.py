@@ -16,8 +16,7 @@ from transformers.models.opt.modeling_opt import OPTAttention, OPTDecoderLayer, 
 from transformers import GPT2Tokenizer
 from peft.tuners.lora import LoraLayer
 from smoothquant.smooth import smooth_lm
-from smoothquant.fake_lora_quant_v2 import OutlierLinear
-from smoothquant.fake_lora_quant import W8A8Linear
+from smoothquant.fake_lora_quant_v2 import W8A8Linear, OutlierLinear, SimpleClipLinear
 from smoothquant.model import build_lora_model
 from datasets import load_dataset
 from tqdm import tqdm
@@ -44,6 +43,7 @@ def parse_args():
     parser.add_argument("--clip_lora", action='store_true', help='if test clip+lora w8a8 precision model')
     parser.add_argument("--lora_int8", action='store_true', help='if test lora-int8 w8a8 precision model')
     parser.add_argument("--simple_clip", action='store_true', help='if test simple_clip w8a8 precision model')
+    parser.add_argument("--simple_clip_lora", action='store_true', help='if test simple_clip w8a8 precision model')
     parser.add_argument("--train", action='store_true', help='if train model before testing')
     parser.add_argument("--test", action='store_true', help='if test model before training')
 
@@ -51,9 +51,12 @@ def parse_args():
     return args
 
 
-def linear_quant(m, quantize_bmm_input, outlier_dict={}, clip=False, B_grad=True):
+def linear_quant(m, quantize_bmm_input, outlier_dict={}, clip=False, B_grad=True, outlier=True):
     if clip:
-        return OutlierLinear.from_float(m, outlier_dict, quantize_output=quantize_bmm_input, B_grad=B_grad)
+        if outlier:
+            return OutlierLinear.from_float(m, outlier_dict, quantize_output=quantize_bmm_input, B_grad=B_grad)
+        else:
+            return SimpleClipLinear.from_float(m, outlier_dict, quantize_output=quantize_bmm_input, B_grad=B_grad)
     else:
         return W8A8Linear.from_float(m, quantize_output=quantize_bmm_input)
 
@@ -80,23 +83,23 @@ def quantize_opt_model(model, quantize_bmm_input=True):
     return model
 
 
-def quantize_outlier_opt_model(model, outlier_dict, quantize_bmm_input=True, B_grad=True):
+def quantize_outlier_opt_model(model, outlier_dict, quantize_bmm_input=True, B_grad=True, *args, **kwargs):
     for name, m in model.model.named_modules():
         if isinstance(m, OPTDecoderLayer):
             fc1_name =  "model." + name + ".fc1" if B_grad else name + ".fc1"
             fc2_name = "model." + name + ".fc2" if B_grad else name + ".fc2"
-            m.fc1 = lora_linear_quant(m.fc1, outlier_dict=outlier_dict[fc1_name], clip = True, B_grad=B_grad)
-            m.fc2 = lora_linear_quant(m.fc2, outlier_dict=outlier_dict[fc2_name], clip = True, B_grad=B_grad)
+            m.fc1 = lora_linear_quant(m.fc1, outlier_dict=outlier_dict[fc1_name], clip=True, B_grad=B_grad, *args, **kwargs)
+            m.fc2 = lora_linear_quant(m.fc2, outlier_dict=outlier_dict[fc2_name], clip=True, B_grad=B_grad, *args, **kwargs)
         elif isinstance(m, OPTAttention):
             # Her we simulate quantizing BMM inputs by quantizing the output of q_proj, k_proj, v_proj
             q_name = "model." + name + ".q_proj" if B_grad else name + ".q_proj"
             k_name = "model." + name + ".k_proj" if B_grad else name + ".k_proj"
             v_name = "model." + name + ".v_proj" if B_grad else name + ".v_proj"
             o_name = "model." + name + ".out_proj" if B_grad else name + ".out_proj"
-            m.q_proj = lora_linear_quant(m.q_proj, quantize_bmm_input, outlier_dict=outlier_dict[q_name], clip = True, B_grad=B_grad)
-            m.k_proj = lora_linear_quant(m.k_proj, quantize_bmm_input, outlier_dict=outlier_dict[k_name], clip = True, B_grad=B_grad)
-            m.v_proj = lora_linear_quant(m.v_proj, quantize_bmm_input, outlier_dict=outlier_dict[v_name], clip = True, B_grad=B_grad)
-            m.out_proj = lora_linear_quant(m.out_proj, quantize_bmm_input, outlier_dict=outlier_dict[o_name], clip = True, B_grad=B_grad)
+            m.q_proj = lora_linear_quant(m.q_proj, quantize_bmm_input, outlier_dict=outlier_dict[q_name], clip = True, B_grad=B_grad, *args, **kwargs)
+            m.k_proj = lora_linear_quant(m.k_proj, quantize_bmm_input, outlier_dict=outlier_dict[k_name], clip = True, B_grad=B_grad, *args, **kwargs)
+            m.v_proj = lora_linear_quant(m.v_proj, quantize_bmm_input, outlier_dict=outlier_dict[v_name], clip = True, B_grad=B_grad, *args, **kwargs)
+            m.out_proj = lora_linear_quant(m.out_proj, quantize_bmm_input, outlier_dict=outlier_dict[o_name], clip = True, B_grad=B_grad, *args, **kwargs)
     return model
 
 class LambdaOPTTrainer:
@@ -252,3 +255,33 @@ if __name__ == "__main__":
             trainer.train()
             acc_lora = trainer.evaluate(model)
             print(f'lora_int8 {args.strategy} W8A8 quantized model after fine tuning accuracy: {acc_lora}')
+
+    if args.simple_clip:
+        filename = f"{args.strategy}_{args.file_name}"
+        model = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, device_map='auto')
+        outlier_indices = torch.load('outlier_idx/' + filename)  # it is generated before test
+        model = quantize_outlier_opt_model(model, outlier_dict=outlier_indices, outlier=True)
+        trainer = LambdaOPTTrainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+        if args.test:
+            acc_lora = trainer.evaluate(model)
+            print(f'simple_clip_lora {args.strategy} W8A8 quantized model before fine tuning accuracy: {acc_lora}')
+
+        if args.train:
+            trainer.train()
+            acc_lora = trainer.evaluate(model)
+            print(f'simple_clip_lora {args.strategy} W8A8 quantized model after fine tuning accuracy: {acc_lora}')
+
+    if args.simple_clip_lora:
+        filename = f"{args.strategy}_{args.file_name}"
+        build_lora_model(model_name)
+        outlier_indices = torch.load('outlier_idx/' + filename)  # it is generated before test
+        model = quantize_outlier_opt_model(model, outlier_dict=outlier_indices,  B_grad=False, outlier=True)
+        trainer = LambdaOPTTrainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
+        if args.test:
+            acc_lora = trainer.evaluate(model)
+            print(f'simple_clip_lora {args.strategy} W8A8 quantized model before fine tuning accuracy: {acc_lora}')
+
+        if args.train:
+            trainer.train()
+            acc_lora = trainer.evaluate(model)
+            print(f'simple_clip_lora {args.strategy} W8A8 quantized model after fine tuning accuracy: {acc_lora}')
