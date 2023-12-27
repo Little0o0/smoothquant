@@ -16,7 +16,8 @@ from transformers.models.opt.modeling_opt import OPTAttention, OPTDecoderLayer, 
 from transformers import GPT2Tokenizer
 from peft.tuners.lora import LoraLayer
 from smoothquant.smooth import smooth_lm
-from smoothquant.fake_lora_quant_v2 import W8A8Linear, OutlierLinear
+from smoothquant.fake_lora_quant_v2 import OutlierLinear
+from smoothquant.fake_lora_quant import W8A8Linear
 from smoothquant.model import build_lora_model
 from datasets import load_dataset
 from tqdm import tqdm
@@ -68,8 +69,8 @@ def lora_linear_quant(m, quantize_bmm_input=False, *args, **kwargs):
 def quantize_opt_model(model, quantize_bmm_input=True):
     for name, m in model.model.named_modules():
         if isinstance(m, OPTDecoderLayer):
-            m.fc1 = lora_linear_quant(m.fc1, quantize_bmm_input)
-            m.fc2 = lora_linear_quant(m.fc2, quantize_bmm_input)
+            m.fc1 = lora_linear_quant(m.fc1)
+            m.fc2 = lora_linear_quant(m.fc2)
         elif isinstance(m, OPTAttention):
             # Her we simulate quantizing BMM inputs by quantizing the output of q_proj, k_proj, v_proj
             m.q_proj = lora_linear_quant(m.q_proj, quantize_bmm_input)
@@ -84,8 +85,8 @@ def quantize_outlier_opt_model(model, outlier_dict, quantize_bmm_input=True, B_g
         if isinstance(m, OPTDecoderLayer):
             fc1_name =  "model." + name + ".fc1" if B_grad else name + ".fc1"
             fc2_name = "model." + name + ".fc2" if B_grad else name + ".fc2"
-            m.fc1 = lora_linear_quant(m.fc1, quantize_bmm_input, outlier_dict=outlier_dict[fc1_name], clip = True, B_grad=B_grad)
-            m.fc2 = lora_linear_quant(m.fc2, quantize_bmm_input, outlier_dict=outlier_dict[fc2_name], clip = True, B_grad=B_grad)
+            m.fc1 = lora_linear_quant(m.fc1, outlier_dict=outlier_dict[fc1_name], clip = True, B_grad=B_grad)
+            m.fc2 = lora_linear_quant(m.fc2, outlier_dict=outlier_dict[fc2_name], clip = True, B_grad=B_grad)
         elif isinstance(m, OPTAttention):
             # Her we simulate quantizing BMM inputs by quantizing the output of q_proj, k_proj, v_proj
             q_name = "model." + name + ".q_proj" if B_grad else name + ".q_proj"
@@ -183,7 +184,7 @@ if __name__ == "__main__":
 
     if args.w8a8:
         model = build_lora_model(model_name)
-        model = quantize_opt_model(model,)
+        model = quantize_opt_model(model, )
         trainer = LambdaOPTTrainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
 
         if args.test:
