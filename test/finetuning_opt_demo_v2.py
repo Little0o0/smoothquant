@@ -286,7 +286,7 @@ if __name__ == "__main__":
         filename = f"{args.strategy}_{args.file_name}"
         model = OPTForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, device_map='auto')
         outlier_indices = torch.load('outlier_idx/' + filename)  # it is generated before test
-        model = quantize_outlier_opt_model(model, outlier_dict=outlier_indices, outlier=True)
+        model = quantize_outlier_opt_model(model, outlier_dict=outlier_indices, outlier=False)
         trainer = LambdaOPTTrainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
         if args.test:
             acc_lora = trainer.evaluate(model)
@@ -299,9 +299,9 @@ if __name__ == "__main__":
 
     if args.simple_clip_lora:
         filename = f"{args.strategy}_{args.file_name}"
-        build_lora_model(model_name)
+        model = build_lora_model(model_name)
         outlier_indices = torch.load('outlier_idx/' + filename)  # it is generated before test
-        model = quantize_outlier_opt_model(model, outlier_dict=outlier_indices,  B_grad=False, outlier=True)
+        model = quantize_outlier_opt_model(model, outlier_dict=outlier_indices,  B_grad=False, outlier=False)
         trainer = LambdaOPTTrainer(model, train_dataset, test_dataset, tokenizer, 'cuda', batch_size, epochs)
         if args.test:
             acc_lora = trainer.evaluate(model)
