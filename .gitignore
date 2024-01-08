@@ -5,6 +5,8 @@ int8_models/
 
 act_scales/
 outputs/
+upper_bound/
+outlier_idx/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
