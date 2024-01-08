@@ -17,6 +17,7 @@ from transformers import (
 import argparse
 
 from smoothquant.calibration import get_act_outlier_idx
+from smoothquant.model import build_lora_model, build_tokenizer
 
 def build_model_and_tokenizer(model_name):
     start = time.time()
@@ -53,7 +54,13 @@ def parse_args():
 @torch.no_grad()
 def main():
     args = parse_args()
-    model, tokenizer = build_model_and_tokenizer(args.model_name)
+
+    if "llama" in args.model_name:
+        model_name = args.model_name
+        model = build_lora_model(model_name)
+        tokenizer = build_tokenizer(model_name, model)
+    else:
+        model, tokenizer = build_model_and_tokenizer(args.model_name)
 
     # if not os.path.exists(args.dataset_path):
     #     print(f'Cannot find the dataset at {args.dataset_path}')

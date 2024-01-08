@@ -91,7 +91,6 @@ class per_tensor_quantization_clip_v2(Function):
             q_max = 2 ** (n_bits - 1) - 1
             scales = scales.clamp(min=1e-5).div(q_max)
             out_t[..., normal_idx] = t[..., normal_idx].div(scales).round().mul(scales)
-
         else:
             scales = t.abs().max()
             q_max = 2 ** (n_bits - 1) - 1
@@ -291,8 +290,6 @@ class ClippingLinear(nn.Module):
             new_module.bias = module.bias
 
         return new_module
-
-
 
 class W8A8Linear(nn.Module):
     def __init__(self, in_features, out_features, bias=True, act_quant = 'per_tensor_absmax', quantize_output=False, nbits=8):

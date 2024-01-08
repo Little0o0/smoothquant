@@ -17,7 +17,7 @@ from transformers import (
 import argparse
 
 from smoothquant.calibration import get_act_scales
-from smoothquant.model import build_lora_model
+from smoothquant.model import build_lora_model, build_tokenizer
 
 def build_model_and_tokenizer(model_name):
     tokenizer = AutoTokenizer.from_pretrained(model_name, model_max_length=512)
@@ -28,9 +28,9 @@ def build_model_and_tokenizer(model_name):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model-name', type=str,
-                        default='facebook/opt-1.3b', help='model name')
+                        default='facebook/opt-1.3b', help='model name facebook/opt-1.3b, meta-llama/Llama-2-7b-hf')
     parser.add_argument('--file-name', type=str,
-                        default='opt-1.3b.pt', help='model name')
+                        default='opt-1.3b.pt', help='model name: opt-1.3b.pt, Llama-2-7b-hf.pt')
     # parser.add_argument('--output-path', type=str, default='act_scales/opt-1.3b.pt',
     #                     help='where to save the act scales')
     parser.add_argument('--dataset-path', type=str, default='OpenAssistant/oasst1',
@@ -44,7 +44,13 @@ def parse_args():
 @torch.no_grad()
 def main():
     args = parse_args()
-    model, tokenizer = build_model_and_tokenizer(args.model_name)
+    if "llama" in args.model_name:
+        model_name = args.model_name
+        model = build_lora_model(model_name)
+        tokenizer = build_tokenizer(model_name, model)
+    else:
+        model, tokenizer = build_model_and_tokenizer(args.model_name)
+
     # model = build_lora_model(args.model_name) # comment it when use PTQ
 
     # if not os.path.exists(args.dataset_path):
